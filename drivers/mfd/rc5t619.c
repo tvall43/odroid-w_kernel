@@ -411,10 +411,10 @@ int rc5t619_power_off(void)
 
 	if (!rc5t619_i2c_client)
 		return -EINVAL;
-	ret = rc5t619_clr_bits(rc5t619->dev,RC5T619_PWR_REP_CNT,(0x1<<0));//Not repeat power ON after power off(Power Off/N_OE)
+	ret = rc5t619_clr_bits(rc5t619->dev,RC5T619_PWR_REP_CNT,(0x0<<0));//Not repeat power ON after power off(Power Off/N_OE)
 
 	if(( charge_state == CHG_STATE_CHG_TRICKLE)||( charge_state == CHG_STATE_CHG_RAPID))
-		 rc5t619_set_bits(rc5t619->dev, RC5T619_PWR_REP_CNT,(0x1<<0));//Power OFF
+		 rc5t619_set_bits(rc5t619->dev, RC5T619_PWR_REP_CNT,(0x0<<0));//Power OFF
 	ret = rc5t619_set_bits(rc5t619->dev, RC5T619_PWR_SLP_CNT,(0x1<<4));//Power OFF
 	if (ret < 0) {
 		dev_err(rc5t619->dev, "rc5t619 power off error!\n");
@@ -691,7 +691,7 @@ static void rc5t619_noe_init(struct rc5t619 *ricoh)
 	struct i2c_client *client = ricoh->client;
 	
 	__rc5t619_write(client, RC5T619_PWR_NOE_TIMSET, 0x0); //N_OE timer setting to 128mS
-	__rc5t619_write(client, RC5T619_PWR_REP_CNT, 0x1); //Repeat power ON after reset (Power Off/N_OE)
+	__rc5t619_write(client, RC5T619_PWR_REP_CNT, 0x0); //Repeat power ON after reset (Power Off/N_OE)
 }
 
 static int rc5t619_i2c_probe(struct i2c_client *client,

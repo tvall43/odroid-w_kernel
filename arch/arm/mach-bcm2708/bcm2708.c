@@ -759,7 +759,7 @@ static int rc5t619_pre_init(struct rc5t619 *rc5t619)
 	int ret;
 	Rc5t619 = 	rc5t619;
 
-	ret = rc5t619_set_bits(rc5t619->dev,RC5T619_PWR_REP_CNT,(1 << 0));  //set restart when power off
+	ret = rc5t619_set_bits(rc5t619->dev,RC5T619_PWR_REP_CNT,(0 << 0));  //Disable restart when power off
 	/****************set Re-charging voltage*****************/
 	ret = rc5t619_set_bits(rc5t619->dev,BATSET2_REG,(3 << 0)); 
 	ret = rc5t619_clr_bits(rc5t619->dev,BATSET2_REG,(1 << 2)); //set vrchg 4v
