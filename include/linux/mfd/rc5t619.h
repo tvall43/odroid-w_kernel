@@ -128,6 +128,11 @@
 #define	RC5T619_FG_CTRL		0xE0
 #define	RC5T619_PSWR			0x07
 
+#define RC5T619_AIN1_DATAH		0x74
+#define RC5T619_AIN1_DATAL		0x75
+#define RC5T619_AIN0_DATAH		0x76
+#define RC5T619_AIN0_DATAL		0x77
+
 #define RICOH_DC1_SLOT 0x16
 #define RICOH_DC2_SLOT 0x17
 #define RICOH_DC3_SLOT 0x18
@@ -271,6 +276,11 @@ enum rc5t619_sleep_control_id {
 	RC5T619_DS_PSO4,
 };
 
+enum rc5t619_adc_id {
+	RC5T619_ADC0,
+	RC5T619_ADC1,
+	RC5T619_ADC_MAX,
+};
 
 struct rc5t619_subdev_info {
 	int		id;

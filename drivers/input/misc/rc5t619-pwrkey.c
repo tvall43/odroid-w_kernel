@@ -141,7 +141,7 @@ static int rc5t619_pwrkey_probe(struct platform_device *pdev)
 		dev_err(&pdev->dev, "power key platform data not supplied\n");
 		return -EINVAL;
 	}
-	key_irq = (pdata->irq + RC5T619_IRQ_POWER_ON);
+	key_irq = pdata->irq;
 	pwrkey = kzalloc(sizeof(*pwrkey), GFP_KERNEL);
 	if (!pwrkey)
 		return -ENOMEM;

@@ -751,6 +751,7 @@ static struct i2c_board_info __initdata snd_pcm512x_i2c_devices[] = {
 #if defined(CONFIG_MFD_RC5T619)
 #define IRQ_BOARD_BASE        (GPIO_IRQ_START + GPIO_IRQS)
 #define RC5T619_HOST_IRQ_GPIO 32
+#define RC5T619_HOST_IRQ_ONOB 33
 
 static struct rc5t619 *Rc5t619;
 static int rc5t619_pre_init(struct rc5t619 *rc5t619)
@@ -773,9 +774,10 @@ static int rc5t619_post_init(struct rc5t619 *rc5t619)
 	
 	ret = rc5t619_clr_bits(rc5t619->dev,0xb1,(7<<0));  //set vbatdec voltage  3.0v
 	ret = rc5t619_set_bits(rc5t619->dev,0xb1,(3<<0));  //set vbatdec voltage 3.0v
-	
+
 	printk("%s,line=%d END\n", __func__,__LINE__);
-	return 0;
+
+	return ret;
 }
 
 #if defined(CONFIG_REGULATOR_RC5T619)
@@ -906,7 +908,7 @@ static struct rc5t619_rtc_platform_data rc5t619_rtc_pdata = {
 
 #if defined(CONFIG_INPUT_RC5T619_PWRKEY)
 static struct rc5t619_pwrkey_platform_data rc5t619_pwrkey_data= { 
-	.irq = IRQ_BOARD_BASE + RC5T619_IRQ_POWER_ON, 
+	.irq = gpio_to_irq(RC5T619_HOST_IRQ_ONOB),
 	.delay_ms = 20, 
 }; 
 #endif //defined(CONFIG_INPUT_RC5T619_PWRKEY)
@@ -948,6 +950,14 @@ static struct rc5t619_subdev_info rc5t619_devs[] = {
 		.platform_data = &rc5t619_pwrkey_data,
 	},
 #endif //defined(CONFIG_INPUT_RC5T619_PWRKEY)
+
+#if defined(CONFIG_RC5T619_ADC)
+	{
+		.id = 8,  
+		.name ="rc5t619-adc",
+	},
+#endif //defined(CONFIG_INPUT_RC5T619_PWRKEY)
+
 };
 
 #define RC5T619_GPIO_INIT(_init_apply, _output_mode, _output_val, _led_mode, _led_func)  \
@@ -960,7 +970,7 @@ static struct rc5t619_subdev_info rc5t619_devs[] = {
 }  \
 
 struct rc5t619_gpio_init_data rc5t619_gpio_data[] = { 
-	RC5T619_GPIO_INIT(0, 1, 0, 0, 1), 
+	RC5T619_GPIO_INIT(0, 0, 0, 0, 0), 
 	RC5T619_GPIO_INIT(0, 0, 0, 0, 0), 
 	RC5T619_GPIO_INIT(0, 0, 0, 0, 0), 
 	RC5T619_GPIO_INIT(0, 0, 0, 0, 0), 
@@ -1061,7 +1071,7 @@ static void bcm2708_power_off(void)
 {
 	extern char bcm2708_reboot_mode;
 
-#if defined(CONFIG_MFD_RC5T619) 
+#if defined(CONFIG_MFD_RC5T619)
 	rc5t619_power_off(); //pmic shutdown
 #endif
 

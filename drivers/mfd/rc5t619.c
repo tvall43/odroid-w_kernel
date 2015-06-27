@@ -385,29 +385,29 @@ int rc5t619_power_off(void)
 	uint8_t status;
 	struct rc5t619 *rc5t619 = g_rc5t619;
 
-//	val = g_soc;
-//	val &= 0x7f;
+	val = g_soc;
+	val &= 0x7f;
 	rc5t619_read(rc5t619->dev, 0xBD, &status);
 	charge_state = (status & 0x1F);
 //	supply_state = ((status & 0xC0) >> 6);
 
-//	ret = rc5t619_write(rc5t619->dev, RC5T619_PSWR, val);
-//	if (ret < 0)
-//		dev_err(rc5t619->dev, "Error in writing PSWR_REG\n");
-//
-//	if (g_fg_on_mode == 0) {
-//		ret = rc5t619_clr_bits(rc5t619->dev,
-//					 RC5T619_FG_CTRL, 0x01);
-//		if (ret < 0)
-//			dev_err(rc5t619->dev, "Error in writing FG_CTRL\n");
-//	}
+	ret = rc5t619_write(rc5t619->dev, RC5T619_PSWR, val);
+	if (ret < 0)
+		dev_err(rc5t619->dev, "Error in writing PSWR_REG\n");
+
+	if (g_fg_on_mode == 0) {
+		ret = rc5t619_clr_bits(rc5t619->dev,
+					 RC5T619_FG_CTRL, 0x01);
+		if (ret < 0)
+			dev_err(rc5t619->dev, "Error in writing FG_CTRL\n");
+	}
 	
 	/* set rapid timer 300 min */
 	err = rc5t619_set_bits(rc5t619->dev, TIMSET_REG, 0x03);
 	if (err < 0)
 		dev_err(rc5t619->dev, "Error in writing the TIMSET_Reg\n");
   
-        ret = rc5t619_write(rc5t619->dev, RC5T619_INTC_INTEN, 0); 
+    ret = rc5t619_write(rc5t619->dev, RC5T619_INTC_INTEN, 0); 
 
 	if (!rc5t619_i2c_client)
 		return -EINVAL;
@@ -415,7 +415,7 @@ int rc5t619_power_off(void)
 
 	if(( charge_state == CHG_STATE_CHG_TRICKLE)||( charge_state == CHG_STATE_CHG_RAPID))
 		 rc5t619_set_bits(rc5t619->dev, RC5T619_PWR_REP_CNT,(0x1<<0));//Power OFF
-	ret = rc5t619_set_bits(rc5t619->dev, RC5T619_PWR_SLP_CNT,(0x1<<0));//Power OFF
+	ret = rc5t619_set_bits(rc5t619->dev, RC5T619_PWR_SLP_CNT,(0x1<<4));//Power OFF
 	if (ret < 0) {
 		dev_err(rc5t619->dev, "rc5t619 power off error!\n");
 		return err;

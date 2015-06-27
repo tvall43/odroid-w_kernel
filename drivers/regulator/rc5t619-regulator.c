@@ -509,7 +509,7 @@ static int rc5t619_regulator_probe(struct platform_device *pdev)
 	struct rc5t619_regulator_platform_data *tps_pdata;
 	struct regulator_config config = { };
 	int id = pdev->id;
-	int err;
+	int err=0;
 
 	ri = find_regulator_info(id);
 	if (ri == NULL) {
@@ -554,6 +554,20 @@ static int rc5t619_regulator_remove(struct platform_device *pdev)
 	return 0;
 }
 
+static void rc5t619_regulator_shutdown(struct platform_device *pdev)
+{
+	struct regulator_dev *rdev = platform_get_drvdata(pdev);
+	struct rc5t619_regulator *ri = rdev_get_drvdata(rdev);
+
+	if((ri->desc.name == "LDO1")||(ri->desc.name == "LDO2")) {
+		rc5t619_reg_disable(rdev);
+	}
+	/* PWR_HOLD bit-clear when power off */
+	dev_info(&pdev->dev, "%s : PWR_HOLD Clear Bit.\n",__func__);
+	
+	return;
+}
+
 static struct platform_driver rc5t619_regulator_driver = {
 	.driver	= {
 		.name	= "rc5t619-regulator",
@@ -561,6 +575,7 @@ static struct platform_driver rc5t619_regulator_driver = {
 	},
 	.probe		= rc5t619_regulator_probe,
 	.remove		= rc5t619_regulator_remove,
+	.shutdown	= rc5t619_regulator_shutdown,
 };
 
 static int __init rc5t619_regulator_init(void)

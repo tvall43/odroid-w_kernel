@@ -347,4 +347,10 @@ config XILINX_XADC
 	  The driver can also be build as a module. If so, the module will be called
 	  xilinx-xadc.
 
+config RC5T619_ADC
+	bool "RC5T619 ADC driver"
+	depends on MFD_RC5T619
+	help
+	  Say yes here to build support for Ricoh RC5T619 ADC.
+
 endmenu
