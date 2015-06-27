@@ -56,8 +56,13 @@
 
 #include <mach/timex.h>
 #include <mach/system.h>
+#include <mach/gpio.h>
 
 #include <linux/delay.h>
+
+#include <linux/regulator/machine.h>
+#include <linux/regulator/consumer.h>
+#include <linux/mfd/rc5t619.h>
 
 #include "bcm2708.h"
 #include "armctrl.h"
@@ -740,6 +745,72 @@ static struct i2c_board_info __initdata snd_pcm512x_i2c_devices[] = {
 };
 #endif
 
+#if defined(CONFIG_MFD_RC5T619) || defined(CONFIG_MFD_RC5T619_MODULE)
+//---------------------------------------------------------------------------------------
+//---------------------------------------------------------------------------------------
+static struct regulator_consumer_supply dc1_supply[] = {
+	REGULATOR_SUPPLY("p3v3", NULL),
+};
+static struct regulator_consumer_supply dc2_supply[] = {
+	REGULATOR_SUPPLY("p1v8", NULL),
+};
+static struct regulator_consumer_supply ldo1_supply[] = {
+	REGULATOR_SUPPLY("p2v5", NULL),
+};
+static struct regulator_consumer_supply ldo2_supply[] = {
+	REGULATOR_SUPPLY("tflash_io", NULL),
+};
+
+#define REGULATOR_INIT(_ldo, _name, _min_uV, _max_uV, _always_on, _ops_mask, _disabled)	\
+	static struct regulator_init_data _ldo##_init_data = {		\
+		.constraints = {					\
+			.name = _name,					\
+			.min_uV = _min_uV,				\
+			.max_uV = _max_uV,				\
+			.always_on	= _always_on,			\
+			.boot_on	= _always_on,			\
+			.apply_uV	= 1,				\
+			.valid_ops_mask = _ops_mask,			\
+			.state_mem = {					\
+				.disabled	= _disabled,		\
+				.enabled	= !(_disabled),		\
+			}						\
+		},							\
+		.num_consumer_supplies = ARRAY_SIZE(_ldo##_supply),	\
+		.consumer_supplies = &_ldo##_supply[0],			\
+	};
+
+REGULATOR_INIT(dc1,  "p3v3",	3300000, 3300000, 1, REGULATOR_CHANGE_STATUS, 0);
+REGULATOR_INIT(dc2,	 "p1v8",	1800000, 1800000, 1, REGULATOR_CHANGE_STATUS, 0);
+REGULATOR_INIT(ldo1, "p2v5",	2500000, 2500000, 1, REGULATOR_CHANGE_STATUS, 0);
+REGULATOR_INIT(ldo2, "TFLASH_IO",	2850000, 2850000, 1, REGULATOR_CHANGE_STATUS, 0);
+
+struct rc5t619_regulator_data rc5t619_reg_info[] ={
+	{ RC5T619_REGULATOR_DC1, &dc1_init_data, },
+	{ RC5T619_REGULATOR_DC2, &dc2_init_data, },
+
+	{ RC5T619_REGULATOR_LDO1, &ldo1_init_data, },
+	{ RC5T619_REGULATOR_LDO2, &ldo2_init_data, },
+};
+
+#define RC5T619_HOST_IRQ_GPIO 32
+static struct rc5t619_platform_data rc5t619_pdata = {
+	.gpio_base = BCM2708_NR_GPIOS,
+	.irq_gpio = RC5T619_HOST_IRQ_GPIO,
+	.irq_base = GPIO_IRQ_START,
+	.regulators = &rc5t619_reg_info[0],
+	.num_regulators = ARRAY_SIZE(rc5t619_reg_info),
+};
+
+static struct i2c_board_info __initdata i2c0_devs[] = {
+	{
+		I2C_BOARD_INFO("rc5t619", 0x32),
+		.platform_data = &rc5t619_pdata,
+		.irq = RC5T619_HOST_IRQ_GPIO,
+	},
+};
+#endif // defined(CONFIG_MFD_RC5T619) || defined(CONFIG_MFD_RC5T619_MODULE)
+
 int __init bcm_register_device(struct platform_device *pdev)
 {
 	int ret;
@@ -952,6 +1023,10 @@ void __init bcm2708_init(void)
 #if defined(CONFIG_SND_BCM2708_SOC_IQAUDIO_DAC) || defined(CONFIG_SND_BCM2708_SOC_IQAUDIO_DAC_MODULE)
         bcm_register_device_dt(&snd_rpi_iqaudio_dac_device);
         i2c_register_board_info_dt(1, snd_pcm512x_i2c_devices, ARRAY_SIZE(snd_pcm512x_i2c_devices));
+#endif
+
+#if defined(CONFIG_MFD_RC5T619) || defined(CONFIG_MFD_RC5T619_MODULE)
+	i2c_register_board_info(0, i2c0_devs, ARRAY_SIZE(i2c0_devs));
 #endif
 
 	if (!use_dt) {

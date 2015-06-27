@@ -635,6 +635,15 @@ config GPIO_RC5T583
 	  This driver provides the support for driving/reading the gpio pins
 	  of RC5T583 device through standard gpio library.
 
+config GPIO_RC5T619
+	bool "RICOH RC5T619 GPIO"
+	depends on MFD_RC5T619
+	help
+	  Select this option to enable GPIO driver for the Ricoh RC5T619
+	  chip family.
+	  This driver provides the support for driving/reading the gpio pins
+	  of RC5T619 device through standard gpio library.
+
 config GPIO_SX150X
 	bool "Semtech SX150x I2C GPIO expander"
 	depends on I2C=y

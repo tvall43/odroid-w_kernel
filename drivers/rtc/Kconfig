@@ -521,7 +521,7 @@ config RTC_DRV_RC5T583
 	  will be called rtc-rc5t583.
 
 config RTC_DRV_RC5T619
-	tristate "RICOH 5T583 RTC driver"
+	tristate "RICOH 5T619 RTC driver"
 	depends on MFD_RC5T619
 	help
 	  If you say yes here you get support for the RTC on the

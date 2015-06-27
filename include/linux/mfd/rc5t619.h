@@ -174,7 +174,7 @@
 
 #define RC5T619_LDOEN1 0x44
 #define RC5T619_LDOEN2 0x45
-#define RC5T619_LOODIS1 0x46
+#define RC5T619_LDODIS1 0x46
 #define RC5T619_LDODIS2 0x47
 #define RC5T619_LDOECO 0x48
 
@@ -322,10 +322,11 @@ enum {
 	RC5T619_GPIO3,
 	RC5T619_GPIO4,
 
-	RC5T619_NR_GPIO,
+	RC5T619_MAX_GPIO,
 };
 
 enum rc5t619_sleep_control_id {
+	RC5T619_DS_NONE,
 	RC5T619_DS_DC1,
 	RC5T619_DS_DC2,
 	RC5T619_DS_DC3,
@@ -348,6 +349,27 @@ enum rc5t619_sleep_control_id {
 	RC5T619_DS_PSO2,
 	RC5T619_DS_PSO3,
 	RC5T619_DS_PSO4,
+};
+
+enum {
+	RC5T619_REGULATOR_DC1,
+	RC5T619_REGULATOR_DC2,
+	RC5T619_REGULATOR_DC3,
+	RC5T619_REGULATOR_DC4,
+	RC5T619_REGULATOR_DC5,
+	RC5T619_REGULATOR_LDO1,
+	RC5T619_REGULATOR_LDO2,
+	RC5T619_REGULATOR_LDO3,
+	RC5T619_REGULATOR_LDO4,
+	RC5T619_REGULATOR_LDO5,
+	RC5T619_REGULATOR_LDO6,
+	RC5T619_REGULATOR_LDO7,
+	RC5T619_REGULATOR_LDO8,
+	RC5T619_REGULATOR_LDO9,
+	RC5T619_REGULATOR_LDO10,
+
+	/* Should be last entry */
+	RC5T619_REGULATOR_MAX,
 };
 
 
@@ -381,13 +403,25 @@ struct rc5t619_dev {
     int         bank_num;
 };
 
+
+struct rc5t619_regulator_data {
+	int id;
+	struct regulator_init_data *initdata;
+};
+
 struct rc5t619_platform_data {
     int irq_base;
     int wakeup;
     int gpio_base;
-    int irq;
     int irq_gpio;
     int enable_shutdown;
+
+	struct rc5t619_regulator_data *regulators;
+	int num_regulators;
+
+	int		regulator_deepsleep_slot[RC5T619_REGULATOR_MAX];
+	unsigned long	regulator_ext_pwr_control[RC5T619_REGULATOR_MAX];
+	struct regulator_init_data *reg_init_data[RC5T619_REGULATOR_MAX];
 };
 
 static inline int rc5t619_write(struct device *dev, uint8_t reg, uint8_t val)
@@ -428,5 +462,8 @@ static inline int rc5t619_update(struct device *dev, unsigned int reg,
     struct rc5t619_dev *rc5t619 = dev_get_drvdata(dev);
     return regmap_update_bits(rc5t619->regmap, reg, mask, val);
 }
+
+int rc5t619_ext_power_req_config(struct device *dev, int deepsleep_id,
+	int ext_pwr_req, int deepsleep_slot_nr);
 
 #endif /* __LINUX_MFD_RC5T619_H */

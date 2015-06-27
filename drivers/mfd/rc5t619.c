@@ -67,8 +67,8 @@ static struct deepsleep_control_data deepsleep_data[] = {
 #endif
 
 static struct mfd_cell rc5t619_subdevs[] = {
-//	{.name = "rc5t619-gpio",},
-//	{.name = "rc5t619-regulator",},
+	{.name = "rc5t619-gpio",},
+	{.name = "rc5t619-regulator",},
 	{.name = "rc5t619-rtc",      },
 //	{.name = "rc5t619-key",      }
 };
@@ -230,8 +230,9 @@ static const struct regmap_config rc5t619_regmap_config = {
 
 #define RC5T619_HOST_IRQ_GPIO 32
 static const struct rc5t619_platform_data rc5t619_data_init = {
-	.gpio_base = RC5T619_HOST_IRQ_GPIO,
-	.irq_base = NR_IRQS + 1,
+	.gpio_base = BCM2708_NR_GPIOS,
+	.irq_gpio = RC5T619_HOST_IRQ_GPIO,
+	.irq_base = GPIO_IRQ_START,
 };
 
 static const struct regmap_irq rc5t619_pwr_irqs[] = {
@@ -311,8 +312,8 @@ static int rc5t619_i2c_probe(struct i2c_client *i2c,
 	rc5t619->dev = &i2c->dev;
 	i2c_set_clientdata(i2c, rc5t619);
 	rc5t619->i2c = i2c;
-	gpio_enable_pullup(pdata->gpio_base);
-	rc5t619->irq = i2c->irq = gpio_to_irq(pdata->gpio_base);
+	gpio_enable_pullup(pdata->irq_gpio);
+	rc5t619->irq = i2c->irq = gpio_to_irq(pdata->irq_gpio);
 
 	rc5t619->regmap = devm_regmap_init_i2c(i2c, &rc5t619_regmap_config);
 	if (IS_ERR(rc5t619->regmap)) {
