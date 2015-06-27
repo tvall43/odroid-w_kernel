@@ -710,6 +710,21 @@ config MFD_RN5T618
 	  additional drivers must be enabled in order to use the
 	  functionality of the device.
 
+config MFD_RC5T619
+	bool "Ricoh RC5T619 Power Management system device"
+	depends on I2C
+	select MFD_CORE
+	select REGMAP_I2C
+	select REGMAP_IRQ
+	help
+	  Select this option to get support for the RICOH619 Power
+	  Management system device.
+	  This driver provides common support for accessing the device
+	  through i2c interface. The device supports multiple sub-devices
+	  like GPIO, interrupts, RTC, LDO and DCDC regulators, onkey.
+	  Additional drivers must be enabled in order to use the
+	  different functionality of the device.
+
 config MFD_SEC_CORE
 	bool "SAMSUNG Electronics PMIC Series Support"
 	depends on I2C=y
