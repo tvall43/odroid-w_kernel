@@ -1,443 +1,417 @@
 /*
- * rtc-rc5t619.c -- RICOH RC5T619 Real Time Clock
+ * drivers/rtc/rtc-rc5t619.c
  *
- * Copyright (C) 2014 Hardkernel Co.,Ltd.
- * Hakjoo Kim <ruppi.kim@hardkernel.com>
+ * Real time clock driver for RICOH RC5T619 power management chip.
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
+ * Copyright (C) 2012-2013 RICOH COMPANY,LTD
+ *
+ * Based on code
+ *  Copyright (C) 2011 NVIDIA Corporation  
+ *
+ * this program is free software; you can redistribute it and/or modify
+ * it under the terms of the gnu general public license as published by
+ * the free software foundation; either version 2 of the license, or
  * (at your option) any later version.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
+ * this program is distributed in the hope that it will be useful, but without
+ * any warranty; without even the implied warranty of merchantability or
+ * fitness for a particular purpose.  see the gnu general public license for
  * more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>. 
+ * you should have received a copy of the gnu general public license
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.  
  *
  */
 
-#include <linux/kernel.h>
-#include <linux/errno.h>
+/* #define debug		1 */
+/* #define verbose_debug	1 */
+
+#include <linux/device.h>
+#include <linux/err.h>
 #include <linux/init.h>
+#include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/types.h>
-#include <linux/rtc.h>
-#include <linux/bcd.h>
-#include <linux/platform_device.h>
-#include <linux/interrupt.h>
 #include <linux/mfd/rc5t619.h>
+#include <linux/rtc/rtc-rc5t619.h>
+#include <linux/platform_device.h>
+#include <linux/rtc.h>
+#include <linux/slab.h>
 
-enum {
-	RTC_SEC = 0,
-	RTC_MIN,
-	RTC_HOUR,
-	RTC_WEEKDAY,
-	RTC_MONTH,
-	RTC_YEAR,
-	RTC_DATE,
-	RTC_NR_TIME
+struct rc5t619_rtc {
+	unsigned long		epoch_start;
+	int			irq;
+	struct rtc_device	*rtc;
+	bool			irq_en;
 };
 
-struct rc5t619_rtc_info {
-	struct device		*dev;
-	struct rc5t619_dev	*rc5t619;
-	struct i2c_client	*rtc;
-	struct rtc_device	*rtc_dev;
-	struct mutex		lock;
-	/* To store the list of enabled interrupts, during system suspend */
-	u32 irqen;
-
-	struct regmap		*regmap;
-
-	int virq;
-	int rtc_24hr_mode;
-};
-
-/* Total number of RTC registers needed to set time*/
-#define NUM_TIME_REGS	(RC5T619_RTC_YEAR - RC5T619_RTC_SEC + 1)
-
-/* Total number of RTC registers needed to set Y-Alarm*/
-#define NUM_YAL_REGS	(RC5T619_RTC_AY_YEAR - RC5T619_RTC_AY_MIN + 1)
-
-/* Set Y-Alarm interrupt */
-#define SET_YAL BIT(5)
-
-/* Get Y-Alarm interrupt status*/
-#define GET_YAL_STATUS BIT(0)
-
-#define RTC_YEAR_OFFSET 100
-#define OS_REF_YEAR 1900
-
-static int rc5t619_rtc_alarm_irq_enable(struct device *dev, unsigned enabled)
+static int rc5t619_read_regs(struct device *dev, int reg, int len,
+	uint8_t *val)
 {
-	struct rc5t619_dev *rc5t619 = dev_get_drvdata(dev->parent);
-	u8 val;
-	dev_info(rc5t619->dev, "%s\n", __func__);
+	int ret;
 
-	/* Set Y-Alarm, based on 'enabled' */
-	val = enabled ? SET_YAL : 0;
-
-	return regmap_update_bits(rc5t619->regmap, RC5T619_RTC_CTL1, SET_YAL,
-		val);
+	ret = rc5t619_bulk_reads(dev->parent, reg, len, val);
+	if (ret < 0) {
+		dev_err(dev->parent, "\n %s failed reading from 0x%02x\n",
+			__func__, reg);
+		WARN_ON(1);
+	}
+	return ret;
 }
 
-static void print_time(struct device *dev, struct rtc_time *tm)
+static int rc5t619_write_regs(struct device *dev, int reg, int len,
+	uint8_t *val)
 {
-	dev_info(dev, "rtc-time : %d/%d/%d %d:%d:%d\n",
-	(tm->tm_mon + 1), tm->tm_mday, (tm->tm_year + 1970),
-		tm->tm_hour, tm->tm_min, tm->tm_sec);
+	int ret;
+	ret = rc5t619_bulk_writes(dev->parent, reg, len, val);
+	if (ret < 0) {
+		dev_err(dev->parent, "\n %s failed writing\n", __func__);
+		WARN_ON(1);
+	}
+
+	return ret;
 }
 
 static int rc5t619_rtc_valid_tm(struct device *dev, struct rtc_time *tm)
 {
-	if (tm->tm_year >= (RTC_YEAR_OFFSET +99) 
+	if (tm->tm_year >= (rtc_year_offset + 99)
 		|| tm->tm_mon > 12
 		|| tm->tm_mday < 1
 		|| tm->tm_mday > rtc_month_days(tm->tm_mon,
-			tm->tm_year + OS_REF_YEAR)
+			tm->tm_year + os_ref_year)
 		|| tm->tm_hour >= 24
-		|| tm->tm_min >= 60) {
-
+		|| tm->tm_min >= 60
+		|| tm->tm_sec >= 60) {
+		dev_err(dev->parent, "\n returning error due to time"
+		"%d/%d/%d %d:%d:%d", tm->tm_mon, tm->tm_mday,
+		tm->tm_year, tm->tm_hour, tm->tm_min, tm->tm_sec);
 		return -EINVAL;
 	}
 	return 0;
 }
 
-/*
- * Gets current rc5t619 RTC time and date parameters.
- *
- * The RTC's time/alarm representation is not what gmtime(3) requires
- * Linux to use:
- *
- *  - Months are 1..12 vs Linux 0-11
- *  - Years are 0..99 vs Linux 1900..N (we assume 21st century)
- */
+static u8 dec2bcd(u8 dec)
+{
+	return ((dec/10)<<4)+(dec%10);
+}
+
+static u8 bcd2dec(u8 bcd)
+{
+	return (bcd >> 4)*10+(bcd & 0xf);
+}
+
+static void convert_bcd_to_decimal(u8 *buf, u8 len)
+{
+	int i = 0;
+	for (i = 0; i < len; i++)
+		buf[i] = bcd2dec(buf[i]);
+}
+
+static void convert_decimal_to_bcd(u8 *buf, u8 len)
+{
+	int i = 0;
+	for (i = 0; i < len; i++)
+		buf[i] = dec2bcd(buf[i]);
+}
+
+static void print_time(struct device *dev, struct rtc_time *tm)
+{
+	dev_info(dev, "rtc-time : %d/%d/%d %d:%d\n",
+		(tm->tm_mon + 1), tm->tm_mday, (tm->tm_year + os_ref_year),
+		tm->tm_hour, tm->tm_min);
+}
+
 static int rc5t619_rtc_read_time(struct device *dev, struct rtc_time *tm)
 {
-	struct rc5t619_dev *rc5t619 = dev_get_drvdata(dev->parent);
-	u8 rtc_data[NUM_TIME_REGS];
-	int ret;
-	//dev_info(rc5t619->dev, "%s\n", __func__);
-
-	ret = regmap_bulk_read(rc5t619->regmap, RC5T619_RTC_SEC, rtc_data,
-		sizeof(rtc_data));
-	if (ret < 0) {
-		dev_err(dev, "RTC read time failed with err:%d\n", ret);
-		return ret;
+	u8 buff[7];
+	int err;
+	err = rc5t619_read_regs(dev, rtc_seconds_reg, sizeof(buff), buff);
+	if (err < 0) {
+		dev_err(dev, "\n %s :: failed to read time\n", __FILE__);
+		return err;
 	}
-
-	tm->tm_sec = bcd2bin(rtc_data[0]);
-	tm->tm_min = bcd2bin(rtc_data[1]);
-	tm->tm_hour = bcd2bin(rtc_data[2]);
-	tm->tm_wday = bcd2bin(rtc_data[3]);
-	tm->tm_mday = bcd2bin(rtc_data[4]);
-	tm->tm_mon = bcd2bin(rtc_data[5]) - 1;
-	tm->tm_year = bcd2bin(rtc_data[6]) + 100;
-
-	//print_time(dev, tm);
-	return ret;
+	convert_bcd_to_decimal(buff, sizeof(buff));
+	tm->tm_sec  = buff[0];
+	tm->tm_min  = buff[1];
+	tm->tm_hour = buff[2];
+	tm->tm_wday = buff[3];
+	tm->tm_mday = buff[4];
+	tm->tm_mon  = buff[5] - 1;
+	tm->tm_year = buff[6] + rtc_year_offset;
+	return rc5t619_rtc_valid_tm(dev, tm);
 }
 
 static int rc5t619_rtc_set_time(struct device *dev, struct rtc_time *tm)
 {
-	struct rc5t619_dev *rc5t619 = dev_get_drvdata(dev->parent);
-	unsigned char rtc_data[NUM_TIME_REGS];
-	int ret;
-	
-	//dev_info(rc5t619->dev, "%s\n", __func__);
-	rtc_data[0] = bin2bcd(tm->tm_sec);
-	rtc_data[1] = bin2bcd(tm->tm_min);
-	rtc_data[2] = bin2bcd(tm->tm_hour);
-	rtc_data[3] = bin2bcd(tm->tm_wday);
-	rtc_data[4] = bin2bcd(tm->tm_mday);
-	rtc_data[5] = bin2bcd(tm->tm_mon + 1);
-	rtc_data[6] = bin2bcd(tm->tm_year - 100);
+	u8 buff[7];
+	int err;
 
-	ret = regmap_bulk_write(rc5t619->regmap, RC5T619_RTC_SEC, rtc_data,
-		sizeof(rtc_data));
-	if (ret < 0) {
-		dev_err(dev, "RTC set time failed with error %d\n", ret);
-		return ret;
+	buff[0] = tm->tm_sec;
+	buff[1] = tm->tm_min;
+	buff[2] = tm->tm_hour;
+	buff[3] = tm->tm_wday;
+	buff[4] = tm->tm_mday;
+	buff[5] = tm->tm_mon + 1;
+	buff[6] = tm->tm_year - rtc_year_offset;
+
+	convert_decimal_to_bcd(buff, sizeof(buff));
+	err = rc5t619_write_regs(dev, rtc_seconds_reg, sizeof(buff), buff);
+	if (err < 0) {
+		dev_err(dev->parent, "\n failed to program new time\n");
+		return err;
 	}
 
-	//print_time(dev, tm);
-	return ret;
+	return 0;
 }
+static int rc5t619_rtc_read_alarm(struct device *dev, struct rtc_wkalrm *alrm);
 
-static int rc5t619_rtc_read_alarm(struct device *dev, struct rtc_wkalrm *alm)
+static int rc5t619_rtc_set_alarm(struct device *dev, struct rtc_wkalrm *alrm)
 {
-	struct rc5t619_dev *rc5t619 = dev_get_drvdata(dev->parent);
-	unsigned char alarm_data[NUM_YAL_REGS];
-	u32 interrupt_enable;
-	int ret;
-	dev_info(rc5t619->dev, "%s\n", __func__);
-
-	ret = regmap_bulk_read(rc5t619->regmap, RC5T619_RTC_AY_MIN, alarm_data,
-		NUM_YAL_REGS);
-	if (ret < 0) {
-		dev_err(dev, "rtc_read_alarm error %d\n", ret);
-		return ret;
-	}
-
-	alm->time.tm_min = bcd2bin(alarm_data[0]);
-	alm->time.tm_hour = bcd2bin(alarm_data[1]);
-	alm->time.tm_mday = bcd2bin(alarm_data[2]);
-	alm->time.tm_mon = bcd2bin(alarm_data[3]) - 1;
-	alm->time.tm_year = bcd2bin(alarm_data[4]) + 100;
-
-	ret = regmap_read(rc5t619->regmap, RC5T619_RTC_CTL1, &interrupt_enable);
-	if (ret < 0)
-		return ret;
-
-	/* check if YALE is set */
-	if (interrupt_enable & SET_YAL)
-		alm->enabled = 1;
-
-	return ret;
-}
-
-static int rc5t619_rtc_set_alarm(struct device *dev, struct rtc_wkalrm *alm)
-{
-	struct rc5t619_dev *rc5t619 = dev_get_drvdata(dev->parent);
-	unsigned char alarm_data[NUM_YAL_REGS];
-	int ret;
-
-	dev_info(rc5t619->dev, "%s\n", __func__);
-	ret = rc5t619_rtc_alarm_irq_enable(dev, 0);
-	if (ret)
-		return ret;
-
-	alarm_data[0] = bin2bcd(alm->time.tm_min);
-	alarm_data[1] = bin2bcd(alm->time.tm_hour);
-	alarm_data[2] = bin2bcd(alm->time.tm_mday);
-	alarm_data[3] = bin2bcd(alm->time.tm_mon + 1);
-	alarm_data[4] = bin2bcd(alm->time.tm_year - 100);
-
-	ret = regmap_bulk_write(rc5t619->regmap, RC5T619_RTC_AY_MIN, alarm_data,
-		NUM_YAL_REGS);
-	if (ret) {
-		dev_err(dev, "rtc_set_alarm error %d\n", ret);
-		return ret;
-	}
-
-	if (alm->enabled)
-		ret = rc5t619_rtc_alarm_irq_enable(dev, 1);
-
-	return ret;
-}
-
-static irqreturn_t rc5t619_rtc_interrupt(int irq, void *rtc)
-
-{
-	struct device *dev = rtc;
-	struct rc5t619_dev *rc5t619 = dev_get_drvdata(dev->parent);
-	struct rc5t619_rtc_info *info = dev_get_drvdata(dev);
-	unsigned long events = 0;
-	int ret;
-	u32 rtc_reg;
-
-	dev_info(rc5t619->dev, "%s\n", __func__);
-	ret = regmap_read(rc5t619->regmap, RC5T619_RTC_CTL2, &rtc_reg);
-
-	dev_info(rc5t619->dev, "rtc_ctl2 : 0x%x\n",rtc_reg);
-	if (ret < 0)
-		return IRQ_NONE;
-
-	if (rtc_reg & GET_YAL_STATUS) {
-		events = RTC_IRQF | RTC_AF;
-		/* clear pending Y-alarm interrupt bit */
-		rtc_reg &= ~GET_YAL_STATUS | ~0x80;
-	}
-
-	ret = regmap_write(rc5t619->regmap, RC5T619_RTC_CTL2, rtc_reg);
-	if (ret)
-		return IRQ_NONE;
-
-	events = RTC_IRQF | RTC_AF;
-	/* Notify RTC core on event */
-	rtc_update_irq(info->rtc_dev, 1, events);
-
-	return IRQ_HANDLED;
-}
-
-#define MODEL24_SHIFT		5
-#define MODEL24_MASK		(1 << MODEL24_SHIFT)
-#define ALARMD_SHIFT		6
-#define ALARMD_MASK		(1 << ALARMD_SHIFT)
-
-static int rc5t619_rtc_init_reg(struct rc5t619_rtc_info *info)
-{
-	int ret;
+	struct rc5t619_rtc *rtc = dev_get_drvdata(dev);
+	unsigned long seconds;
+	u8 buff[6];
+	int err;
 	struct rtc_time tm;
-	u32 rtc_reg;
 
-	/* Set RTC control register : 24hour mdoe and alarm d */
-	rtc_reg =  (1 << MODEL24_SHIFT) | (1 << ALARMD_SHIFT);
+	if (rtc->irq == -1)
+		return -EIO;
 
-	/* to enable alarm_d and 24-hour format */
-	ret = regmap_write(info->rc5t619->regmap, RC5T619_RTC_CTL1, rtc_reg);
-	if (ret < 0) {
-		dev_err(info->dev, "%s: fail to write rtc control 1 reg(%d)\n",
-				__func__, ret);
-		return ret;
+	rtc_tm_to_time(&alrm->time, &seconds);
+	err = rc5t619_rtc_read_time(dev, &tm);
+	if (err) {
+		dev_err(dev, "\n failed to read time\n");
+		return err;
 	}
-	info->rtc_24hr_mode = 1;
+	rtc_tm_to_time(&tm, &rtc->epoch_start);
 
-	/* clear RTC Adjust register */
-	rtc_reg =0;
-	ret = regmap_write(info->rc5t619->regmap, RC5T619_RTC_ADJ, 0);
+	dev_info(dev->parent, "\n setting alarm to requested time::\n");
 
-	ret = regmap_read(info->rc5t619->regmap, RC5T619_RTC_CTL2, &rtc_reg);
-	if (ret < 0) {
-		dev_err(info->rc5t619->dev, "%s: fail to read rtc control 2 reg(%d)\n",
-				__func__, ret);
-		return ret;
+	if (WARN_ON(alrm->enabled && (seconds < rtc->epoch_start))) {
+		dev_err(dev->parent, "\n can't set alarm to requested time\n");
+		return -EINVAL;
 	}
 
-	/* Set default time-2014.7.17-00h:0m:0s if PON is on */
-	if(rtc_reg&0x10) {
-		dev_err(info->rc5t619->dev, "%s: PON=1 -- CRTL2=%x\n", __func__, rtc_reg);
-		tm.tm_sec = 0;
-		tm.tm_min = 0;
-		tm.tm_hour = 12;
-		tm.tm_wday = 3;
-		tm.tm_mday = 17;
-		tm.tm_mon = 6;
-		tm.tm_year = 18;
-		/* VDET & PON =0, others are not changed */
-		rtc_reg &=~ 0x50;
-		ret = regmap_write(info->rc5t619->regmap, RC5T619_RTC_CTL2, rtc_reg);
-		rc5t619_rtc_set_time(info->dev, &tm);
-	} else {
-		dev_err(info->rc5t619->dev, "%s: rtc_reg(0x%x)\n", __func__, rtc_reg);
-		rc5t619_rtc_read_time(info->dev, &tm);
+	if (alrm->enabled && !rtc->irq_en)
+		rtc->irq_en = true;
+	else if (!alrm->enabled && rtc->irq_en)
+		rtc->irq_en = false;
+
+	buff[0] = alrm->time.tm_sec;
+	buff[1] = alrm->time.tm_min;
+	buff[2] = alrm->time.tm_hour;
+	buff[3] = alrm->time.tm_mday;
+	buff[4] = alrm->time.tm_mon + 1;
+	buff[5] = alrm->time.tm_year - rtc_year_offset;
+	convert_decimal_to_bcd(buff, sizeof(buff));
+	buff[3] |= 0x80;	/* set DAL_EXT */
+	err = rc5t619_write_regs(dev, rtc_alarm_y_sec, sizeof(buff), buff);
+	if (err) {
+		dev_err(dev->parent, "\n unable to set alarm\n");
+		return -EBUSY;
 	}
 
-	return ret;
+	err = rc5t619_read_regs(dev, rtc_ctrl2, 1, buff);
+	if (err) {
+		dev_err(dev->parent, "unable to read rtc_ctrl2 reg\n");
+		return -EBUSY;
+	}
+
+	buff[1] = buff[0] & ~0x81; /* to clear alarm-D flag, and set adjustment parameter */
+	buff[0] = 0x60; /* to enable alarm_d and 24-hour format */
+	err = rc5t619_write_regs(dev, rtc_ctrl1, 2, buff);
+	if (err) {
+		dev_err(dev, "failed programming rtc ctrl regs\n");
+		return -EBUSY;
+	}
+return err;
 }
 
+static int rc5t619_rtc_read_alarm(struct device *dev, struct rtc_wkalrm *alrm)
+{
+	u8 buff[6];
+	int err;
+
+	err = rc5t619_read_regs(dev, rtc_alarm_y_sec, sizeof(buff), buff);
+	if (err)
+		return err;
+	buff[3] &= ~0x80;	/* clear DAL_EXT */
+	convert_bcd_to_decimal(buff, sizeof(buff));
+
+	alrm->time.tm_sec  = buff[0];
+	alrm->time.tm_min  = buff[1];
+	alrm->time.tm_hour = buff[2];
+	alrm->time.tm_mday = buff[3];
+	alrm->time.tm_mon  = buff[4] - 1;
+	alrm->time.tm_year = buff[5] + rtc_year_offset;
+
+//	dev_info(dev->parent, "\n getting alarm time::\n");
+	return 0;
+}
 
 static const struct rtc_class_ops rc5t619_rtc_ops = {
 	.read_time	= rc5t619_rtc_read_time,
 	.set_time	= rc5t619_rtc_set_time,
-//	.read_alarm	= rc5t619_rtc_read_alarm,
 //	.set_alarm	= rc5t619_rtc_set_alarm,
-//	.alarm_irq_enable = rc5t619_rtc_alarm_irq_enable,
+//	.read_alarm	= rc5t619_rtc_read_alarm,
 };
+
+static irqreturn_t rc5t619_rtc_irq(int irq, void *data)
+{
+	struct device *dev = data;
+	struct rc5t619_rtc *rtc = dev_get_drvdata(dev);
+	u8 reg;
+	int err;
+
+	/* clear alarm-D status bits.*/
+	err = rc5t619_read_regs(dev, rtc_ctrl2, 1, &reg);
+	if (err)
+		dev_err(dev->parent, "unable to read rtc_ctrl2 reg\n");
+
+	/* to clear alarm-D flag, and set adjustment parameter */
+	reg &= ~0x81;
+	err = rc5t619_write_regs(dev, rtc_ctrl2, 1, &reg);
+	if (err)
+		dev_err(dev->parent, "unable to program rtc_status reg\n");
+
+	rtc_update_irq(rtc->rtc, 1, RTC_IRQF | RTC_AF);
+	return IRQ_HANDLED;
+}
 
 static int rc5t619_rtc_probe(struct platform_device *pdev)
 {
-	struct rc5t619_dev *rc5t619 = dev_get_drvdata(pdev->dev.parent);
-	struct rc5t619_rtc_info *info;
-	int ret;
+	struct rc5t619_rtc_platform_data *pdata = pdev->dev.platform_data;
+	struct rc5t619_rtc *rtc;
+	struct rtc_time tm;
+	int err;
+	u8 reg;
 
-	dev_info(&pdev->dev, "%s\n", __func__);
+	rtc = devm_kzalloc(&pdev->dev, sizeof(struct rc5t619_rtc),GFP_KERNEL);
 
-	info = devm_kzalloc(&pdev->dev, sizeof(struct rc5t619_rtc_info),
-			GFP_KERNEL);
-	if (!info)
+	if (!rtc)
 		return -ENOMEM;
 
-	info->dev = &pdev->dev;
-	info->rc5t619 = rc5t619;
+	rtc->irq = -1;
 
-	platform_set_drvdata(pdev, info);
-
-	ret = rc5t619_rtc_init_reg(info);
-
-	if (ret < 0) {
-		dev_err(&pdev->dev, "Failed to initialize RTC reg:%d\n", ret);
-		goto err_rtc;
+	if (!pdata) {
+		dev_err(&pdev->dev, "no platform_data specified\n");
+		return -EINVAL;
 	}
 
+	if (pdata->irq < 0)
+		dev_err(&pdev->dev, "\n no irq specified, wakeup is disabled\n");
+
+	dev_set_drvdata(&pdev->dev, rtc);
 	device_init_wakeup(&pdev->dev, 1);
-	info->rtc_dev = devm_rtc_device_register(&pdev->dev, pdev->name,
-		&rc5t619_rtc_ops, THIS_MODULE);
-	if (IS_ERR(info->rtc_dev)) {
-		ret = PTR_ERR(info->rtc_dev);
-		dev_err(&pdev->dev, "RTC device register: err %d\n", ret);
-		return ret;
+	rtc->rtc = rtc_device_register(pdev->name, &pdev->dev,
+				       &rc5t619_rtc_ops, THIS_MODULE);
+
+	if (IS_ERR(rtc->rtc)) {
+		err = PTR_ERR(rtc->rtc);
+		goto fail;
 	}
-#if 0
-	info->virq = regmap_irq_get_virq(rc5t619->irq_data_rtc, 0);
-	if (info->virq < 0)
-		return info->virq;
-	ret = devm_request_threaded_irq(&pdev->dev, info->virq, NULL,
-		rc5t619_rtc_interrupt, IRQF_ONESHOT,
-		"rc5t619-alarm", &pdev->dev);
 
-	if (ret < 0)
-		dev_err(&pdev->dev, "Failed to request IRQ%d: %d\n",
-			info->virq, ret);
-#endif
+	reg = 0x60; /* to enable alarm_d and 24-hour format */
+	err = rc5t619_write_regs(&pdev->dev, rtc_ctrl1, 1, &reg);
+	if (err) {
+		dev_err(&pdev->dev, "failed rtc setup\n");
+		return -EBUSY;
+	}
 
-err_rtc:
+	reg =  0; /* clearing RTC Adjust register */
+	err = rc5t619_write_regs(&pdev->dev, rtc_adjust, 1, &reg);
+	if (err) {
+		dev_err(&pdev->dev, "unable to program rtc_adjust reg\n");
+		return -EBUSY;
+	}
+
+	/* Set default time-1970.1.1-0h:0m:0s if PON is on */
+	err = rc5t619_read_regs(&pdev->dev, rtc_ctrl2, 1, &reg);
+	if (err) {
+		dev_err(&pdev->dev, "\n failed to read rtc ctl2 reg\n");
+		return -EBUSY;
+	}
+
+	if (reg&0x10) {
+		tm.tm_sec  = 0;
+		tm.tm_min  = 0;
+		tm.tm_hour = 0;
+		tm.tm_wday = 4;
+		tm.tm_mday = 1;
+		tm.tm_mon  = 0;
+		tm.tm_year = 0x70;
+		/* VDET & PON = 0, others are not changed */
+		reg &= ~0x50;
+		err = rc5t619_write_regs(&pdev->dev, rtc_ctrl2, 1, &reg);
+		if (err) {
+			dev_err(&pdev->dev, "\n failed to write rtc ctl2 reg\n");
+			return -EBUSY;
+		}
+	} else {
+		err = rc5t619_rtc_read_time(&pdev->dev, &tm);
+		if (err) {
+			dev_err(&pdev->dev, "\n failed to read time\n");
+			return err;
+		}
+		print_time(&pdev->dev, &tm);
+	}
+	if (rc5t619_rtc_valid_tm(&pdev->dev, &tm)) {
+		if (pdata->time->tm_year < 2000 || pdata->time->tm_year > 2100) {
+			memset(pdata->time, 0, sizeof(struct rtc_time));
+			pdata->time->tm_year = rtc_year_offset;
+			pdata->time->tm_mday = 1;
+		} else
+		pdata->time->tm_year -= os_ref_year;
+		err = rc5t619_rtc_set_time(&pdev->dev, pdata->time);
+		if (err) {
+			dev_err(&pdev->dev, "\n failed to set time\n");
+			return err;
+		}
+	}
+	if (pdata && (pdata->irq >= 0)) {
+		rtc->irq = pdata->irq + RC5T619_IRQ_DALE;
+		err = request_threaded_irq(rtc->irq, NULL, rc5t619_rtc_irq,
+					IRQF_ONESHOT, "rtc-rc5t619",
+					&pdev->dev);
+		if (err) {
+			dev_err(&pdev->dev, "request IRQ:%d fail\n", rtc->irq);
+			rtc->irq = -1;
+		} else {
+			device_init_wakeup(&pdev->dev, 1);
+			enable_irq_wake(rtc->irq);
+		}
+	}
 	return 0;
+
+fail:
+	if (!IS_ERR_OR_NULL(rtc->rtc))
+		rtc_device_unregister(rtc->rtc);
+	kfree(rtc);
+	return err;
 }
 
-/*
- * Disable rc5t619 RTC interrupts.
- * Sets status flag to free.
- */
 static int rc5t619_rtc_remove(struct platform_device *pdev)
 {
-	struct rc5t619_rtc_info *info = platform_get_drvdata(pdev); 
+	struct rc5t619_rtc *rtc = dev_get_drvdata(&pdev->dev);
 
-	rc5t619_rtc_alarm_irq_enable(&info->rtc_dev->dev, 0);
+	if (rtc->irq != -1)
+		free_irq(rtc->irq, rtc);
+	rtc_device_unregister(rtc->rtc);
+	kfree(rtc);
 	return 0;
 }
 
-#ifdef CONFIG_PM_SLEEP
-static int rc5t619_rtc_suspend(struct device *dev)
-{
-	struct rc5t619_dev *rc5t619 = dev_get_drvdata(dev->parent);
-	struct rc5t619_rtc_info *info = dev_get_drvdata(dev);
-	int ret;
-
-	/* Store current list of enabled interrupts*/
-	ret = regmap_read(rc5t619->regmap, RC5T619_RTC_CTL1,
-		&info->irqen);
-	return ret;
-}
-
-static int rc5t619_rtc_resume(struct device *dev)
-{
-	struct rc5t619_dev *rc5t619 = dev_get_drvdata(dev->parent);
-	struct rc5t619_rtc_info *info = dev_get_drvdata(dev);
-
-	/* Restore list of enabled interrupts before suspend */
-	return regmap_write(rc5t619->regmap, RC5T619_RTC_CTL1,
-		info->irqen);
-}
-#endif
-
-static SIMPLE_DEV_PM_OPS(rc5t619_rtc_pm_ops, rc5t619_rtc_suspend,
-			rc5t619_rtc_resume);
-
-static const struct platform_device_id rtc_id[] = {
-	{ "rc5t619-rtc", 0 },
-	{},
-};
-
 static struct platform_driver rc5t619_rtc_driver = {
-	.probe		= rc5t619_rtc_probe,
-	.remove		= rc5t619_rtc_remove,
-	.id_table	= rtc_id,
-	.driver		= {
+	.driver	= {
+		.name	= "rc5t619-rtc",
 		.owner	= THIS_MODULE,
-		.name	= "rtc-rc5t619",
-		.pm	= &rc5t619_rtc_pm_ops,
 	},
+	.probe	= rc5t619_rtc_probe,
+	.remove	= rc5t619_rtc_remove,
 };
 
 module_platform_driver(rc5t619_rtc_driver);
+
+MODULE_DESCRIPTION("RICOH RC5T619 RTC driver");
 MODULE_ALIAS("platform:rtc-rc5t619");
-MODULE_AUTHOR("Hakjo Kim <ruppi.kim@hardkernel.com>");
-MODULE_LICENSE("GPL v2");
+MODULE_AUTHOR("zhangqing <zhangqing@rock-chips.com>");
+MODULE_LICENSE("GPL");
+

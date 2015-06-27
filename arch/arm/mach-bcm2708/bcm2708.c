@@ -60,9 +60,12 @@
 
 #include <linux/delay.h>
 
+#include <linux/mfd/rc5t619.h>
 #include <linux/regulator/machine.h>
 #include <linux/regulator/consumer.h>
-#include <linux/mfd/rc5t619.h>
+#include <linux/regulator/rc5t619-regulator.h>
+#include <linux/rtc/rtc-rc5t619.h>
+#include <linux/power/rc5t619-battery.h>
 
 #include "bcm2708.h"
 #include "armctrl.h"
@@ -745,68 +748,241 @@ static struct i2c_board_info __initdata snd_pcm512x_i2c_devices[] = {
 };
 #endif
 
-#if defined(CONFIG_MFD_RC5T619) || defined(CONFIG_MFD_RC5T619_MODULE)
-//---------------------------------------------------------------------------------------
-//---------------------------------------------------------------------------------------
-static struct regulator_consumer_supply dc1_supply[] = {
+#if defined(CONFIG_MFD_RC5T619)
+#define IRQ_BOARD_BASE        (GPIO_IRQ_START + GPIO_IRQS)
+#define RC5T619_HOST_IRQ_GPIO 32
+
+static struct rc5t619 *Rc5t619;
+static int rc5t619_pre_init(struct rc5t619 *rc5t619)
+{
+	int ret;
+	Rc5t619 = 	rc5t619;
+
+	ret = rc5t619_set_bits(rc5t619->dev,RC5T619_PWR_REP_CNT,(1 << 0));  //set restart when power off
+	/****************set Re-charging voltage*****************/
+	ret = rc5t619_set_bits(rc5t619->dev,BATSET2_REG,(3 << 0)); 
+	ret = rc5t619_clr_bits(rc5t619->dev,BATSET2_REG,(1 << 2)); //set vrchg 4v
+	/********************************************************/
+
+	return 0;
+}
+
+static int rc5t619_post_init(struct rc5t619 *rc5t619)
+{
+	int ret=0;
+	
+	ret = rc5t619_clr_bits(rc5t619->dev,0xb1,(7<<0));  //set vbatdec voltage  3.0v
+	ret = rc5t619_set_bits(rc5t619->dev,0xb1,(3<<0));  //set vbatdec voltage 3.0v
+	
+	printk("%s,line=%d END\n", __func__,__LINE__);
+	return 0;
+}
+
+#if defined(CONFIG_REGULATOR_RC5T619)
+static struct regulator_consumer_supply rc5t619_dcdc1_supply[] = {
 	REGULATOR_SUPPLY("p3v3", NULL),
 };
-static struct regulator_consumer_supply dc2_supply[] = {
+static struct regulator_consumer_supply rc5t619_dcdc2_supply[] = {
 	REGULATOR_SUPPLY("p1v8", NULL),
 };
-static struct regulator_consumer_supply ldo1_supply[] = {
+
+static struct regulator_consumer_supply rc5t619_ldo1_supply[] = {
 	REGULATOR_SUPPLY("p2v5", NULL),
 };
-static struct regulator_consumer_supply ldo2_supply[] = {
+static struct regulator_consumer_supply rc5t619_ldo2_supply[] = {
 	REGULATOR_SUPPLY("tflash_io", NULL),
 };
 
-#define REGULATOR_INIT(_ldo, _name, _min_uV, _max_uV, _always_on, _ops_mask, _disabled)	\
-	static struct regulator_init_data _ldo##_init_data = {		\
-		.constraints = {					\
-			.name = _name,					\
-			.min_uV = _min_uV,				\
-			.max_uV = _max_uV,				\
-			.always_on	= _always_on,			\
-			.boot_on	= _always_on,			\
-			.apply_uV	= 1,				\
-			.valid_ops_mask = _ops_mask,			\
-			.state_mem = {					\
-				.disabled	= _disabled,		\
-				.enabled	= !(_disabled),		\
-			}						\
-		},							\
-		.num_consumer_supplies = ARRAY_SIZE(_ldo##_supply),	\
-		.consumer_supplies = &_ldo##_supply[0],			\
-	};
+static struct regulator_init_data rc5t619_dcdc1 = {
+	.constraints = {
+		.name           = "DC1",
+		.min_uV			= 3300000,
+		.max_uV			= 3300000,
+		.apply_uV		= 1,
+		.always_on = 1,
+		.valid_ops_mask = REGULATOR_CHANGE_STATUS | REGULATOR_CHANGE_VOLTAGE | REGULATOR_CHANGE_MODE,
+		.valid_modes_mask = REGULATOR_MODE_STANDBY | REGULATOR_MODE_NORMAL | REGULATOR_MODE_FAST,
 
-REGULATOR_INIT(dc1,  "p3v3",	3300000, 3300000, 1, REGULATOR_CHANGE_STATUS, 0);
-REGULATOR_INIT(dc2,	 "p1v8",	1800000, 1800000, 1, REGULATOR_CHANGE_STATUS, 0);
-REGULATOR_INIT(ldo1, "p2v5",	2500000, 2500000, 1, REGULATOR_CHANGE_STATUS, 0);
-REGULATOR_INIT(ldo2, "TFLASH_IO",	2850000, 2850000, 1, REGULATOR_CHANGE_STATUS, 0);
-
-struct rc5t619_regulator_data rc5t619_reg_info[] ={
-	{ RC5T619_REGULATOR_DC1, &dc1_init_data, },
-	{ RC5T619_REGULATOR_DC2, &dc2_init_data, },
-
-	{ RC5T619_REGULATOR_LDO1, &ldo1_init_data, },
-	{ RC5T619_REGULATOR_LDO2, &ldo2_init_data, },
+	},
+	.num_consumer_supplies = ARRAY_SIZE(rc5t619_dcdc1_supply),
+	.consumer_supplies =  rc5t619_dcdc1_supply,
 };
 
-#define RC5T619_HOST_IRQ_GPIO 32
+static struct regulator_init_data rc5t619_dcdc2 = {
+	.constraints = {
+		.name           = "DC2",
+		.min_uV			= 1800000,
+		.max_uV			= 1800000,
+		.apply_uV		= 1,
+		.always_on = 1,
+	
+		.valid_ops_mask = REGULATOR_CHANGE_STATUS | REGULATOR_CHANGE_VOLTAGE | REGULATOR_CHANGE_MODE,
+		.valid_modes_mask = REGULATOR_MODE_STANDBY | REGULATOR_MODE_NORMAL | REGULATOR_MODE_FAST,
+
+	},
+	.num_consumer_supplies = ARRAY_SIZE(rc5t619_dcdc2_supply),
+	.consumer_supplies =  rc5t619_dcdc2_supply,
+};
+
+static struct regulator_init_data rc5t619_ldo1 = {
+	.constraints = {
+		.name           = "LDO1",
+		.min_uV			= 2500000,
+		.max_uV			= 2500000,
+		.apply_uV		= 1,
+		.always_on = 1,
+		
+		.valid_ops_mask = REGULATOR_CHANGE_STATUS | REGULATOR_CHANGE_VOLTAGE | REGULATOR_CHANGE_MODE,
+		.valid_modes_mask = REGULATOR_MODE_STANDBY | REGULATOR_MODE_NORMAL,
+
+	},
+	.num_consumer_supplies = ARRAY_SIZE(rc5t619_ldo1_supply),
+	.consumer_supplies =  rc5t619_ldo1_supply,
+};
+
+/* */
+static struct regulator_init_data rc5t619_ldo2 = {
+	.constraints = {
+		.name           = "LDO2",
+		.min_uV			= 2850000,
+		.max_uV			= 2850000,
+		.apply_uV		= 1,
+		.always_on = 1,
+		
+		.valid_ops_mask = REGULATOR_CHANGE_STATUS | REGULATOR_CHANGE_VOLTAGE | REGULATOR_CHANGE_MODE,
+		.valid_modes_mask = REGULATOR_MODE_STANDBY | REGULATOR_MODE_NORMAL,
+
+	},
+	.num_consumer_supplies = ARRAY_SIZE(rc5t619_ldo2_supply),
+	.consumer_supplies =  rc5t619_ldo2_supply,
+};
+#endif //defined(CONFIG_REGULATOR_RC5T619)
+
+
+#if defined(CONFIG_BATTERY_RC5T619)
+static struct rc5t619_battery_platform_data rc5t619_battery = {
+	.irq = IRQ_BOARD_BASE,
+	.alarm_vol_mv = 3300,
+	.multiple = 100,
+	.monitor_time = 20,
+	
+	//4200mv type battery
+	.ch_vfchg		= 0xFF,	/* VFCHG		= 0x0-0x4 (4.05v 4.10v 4.15v 4.20v 4.35v) 0xFF is OTP setting*/
+	.ch_vrchg		= 0xFF,	/* VRCHG		= 0x0-0x4 (3.85v 3.90v 3.95v 4.00v 4.10v) 0xFF is OTP setting*/
+	.ch_vbatovset	= 0xFF,	/* VBATOVSET	= 0 or 1 (0 : 4.38V(up)/3.95V(down) 1: 4.53V(up)/4.10V(down)) 
+							   0xFF is OTP setting*/
+	.ch_ichg		= 0xFF,	/* ICHG			= 0x0-0x1D (100mA - 3000mA)  0xFF is OTP setting*/
+	.ch_icchg		= 0x03,	/* ICCHG		= 0x0-3 (50mA 100mA 150mA 200mA)  0xFF is OTP setting*/
+	.ch_ilim_adp	= 0xFF,	/* ILIM_ADP		= 0x0-0x1D (100mA - 3000mA) */
+	.ch_ilim_usb	= 0xFF,	/* ILIM_USB		= 0x0-0x1D (100mA - 3000mA) */
+	.fg_target_vsys	= 3200, /* This value is the target one to DSOC=0% */
+	.fg_target_ibat	= 2000, /* This value is the target one to DSOC=0% */
+	.jt_en			= 0,	/* JEITA Switch	= 1:enable, 0:disable */
+	.jt_hw_sw		= 1,	/* JEITA is controlled by 1:HW, 0:SW */
+	.jt_temp_h		= 50,	/* degree C */ 
+	.jt_temp_l		= 12,	/* degree C */
+	.jt_vfchg_h		= 0x03,	/* VFCHG High  	= 0 - 0x04 (4.05, 4.10, 4.15, 4.20, 4.35V) */
+	.jt_vfchg_l		= 0,	/* VFCHG Low  	= 0 - 0x04 (4.05, 4.10, 4.15, 4.20, 4.35V) */
+	.jt_ichg_h		= 0x0D,	/* ICHG High   	= 0 - 0x1D (100 - 3000mA) */
+	.jt_ichg_l		= 0x09,	/* ICHG Low   	= 0 - 0x1D (100 - 3000mA) */
+};
+#endif //defined(CONFIG_BATTERY_RC5T619)
+
+#if defined(CONFIG_RTC_DRV_RC5T619)
+static struct rtc_time rtc_tm = {
+    .tm_wday = 0,
+    .tm_year = 114,
+    .tm_mon  = 0,
+    .tm_mday = 1,
+    .tm_hour = 0,
+    .tm_min  = 0,
+    .tm_sec  = 0,
+};
+static struct rc5t619_rtc_platform_data rc5t619_rtc_pdata = {
+	.irq = IRQ_BOARD_BASE,
+	.time = &rtc_tm,
+};
+#endif //defined(CONFIG_RTC_DRV_RC5T619)
+
+#if defined(CONFIG_INPUT_RC5T619_PWRKEY)
+static struct rc5t619_pwrkey_platform_data rc5t619_pwrkey_data= { 
+	.irq = IRQ_BOARD_BASE + RC5T619_IRQ_POWER_ON, 
+	.delay_ms = 20, 
+}; 
+#endif //defined(CONFIG_INPUT_RC5T619_PWRKEY)
+
+#define RC5T619_REGULATOR(_id, _data)  \
+{ \
+		.id = RC5T619_ID_##_id, \
+		.name = "rc5t619-regulator", \
+		.platform_data = _data, \
+} \
+
+static struct rc5t619_subdev_info rc5t619_devs[] = {
+	RC5T619_REGULATOR(DC1, &rc5t619_dcdc1),
+	RC5T619_REGULATOR(DC2, &rc5t619_dcdc2),
+	
+	RC5T619_REGULATOR(LDO1, &rc5t619_ldo1),
+	RC5T619_REGULATOR(LDO2, &rc5t619_ldo2),
+
+#if defined(CONFIG_BATTERY_RC5T619)
+	{
+		.id = 5,  
+		.name ="rc5t619-battery",
+		.platform_data = &rc5t619_battery,
+	},
+#endif //defined(CONFIG_BATTERY_RC5T619)
+
+#if defined(CONFIG_RTC_DRV_RC5T619)
+	{
+		.id = 6,  
+		.name ="rc5t619-rtc",
+		.platform_data = &rc5t619_rtc_pdata,
+	},
+#endif //defined(CONFIG_RTC_DRV_RC5T619)
+
+#if defined(CONFIG_INPUT_RC5T619_PWRKEY)
+	{
+		.id = 7,  
+		.name ="rc5t619-pwrkey",
+		.platform_data = &rc5t619_pwrkey_data,
+	},
+#endif //defined(CONFIG_INPUT_RC5T619_PWRKEY)
+};
+
+#define RC5T619_GPIO_INIT(_init_apply, _output_mode, _output_val, _led_mode, _led_func)  \
+{  \
+	.output_mode_en = _output_mode,  \
+	.output_val = _output_val,  \
+	.init_apply = _init_apply,   \
+	.led_mode = _led_mode,  \
+	.led_func = _led_func,  \
+}  \
+
+struct rc5t619_gpio_init_data rc5t619_gpio_data[] = { 
+	RC5T619_GPIO_INIT(0, 1, 0, 0, 1), 
+	RC5T619_GPIO_INIT(0, 0, 0, 0, 0), 
+	RC5T619_GPIO_INIT(0, 0, 0, 0, 0), 
+	RC5T619_GPIO_INIT(0, 0, 0, 0, 0), 
+	RC5T619_GPIO_INIT(0, 0, 0, 0, 0), 
+}; 
+
 static struct rc5t619_platform_data rc5t619_pdata = {
-	.gpio_base = BCM2708_NR_GPIOS,
-	.irq_gpio = RC5T619_HOST_IRQ_GPIO,
-	.irq_base = GPIO_IRQ_START,
-	.regulators = &rc5t619_reg_info[0],
-	.num_regulators = ARRAY_SIZE(rc5t619_reg_info),
+	.irq_base          = IRQ_BOARD_BASE,
+	.subdevs           = rc5t619_devs,
+	.num_subdevs       = ARRAY_SIZE(rc5t619_devs),
+	.gpio_base         = BCM2708_NR_GPIOS,
+	.gpio_init_data    = rc5t619_gpio_data, 
+	.num_gpioinit_data = ARRAY_SIZE(rc5t619_gpio_data),
+	.pre_init          = rc5t619_pre_init,
+	.post_init         = rc5t619_post_init,
 };
 
 static struct i2c_board_info __initdata i2c0_devs[] = {
 	{
 		I2C_BOARD_INFO("rc5t619", 0x32),
 		.platform_data = &rc5t619_pdata,
-		.irq = RC5T619_HOST_IRQ_GPIO,
+		.irq = gpio_to_irq(RC5T619_HOST_IRQ_GPIO),
 	},
 };
 #endif // defined(CONFIG_MFD_RC5T619) || defined(CONFIG_MFD_RC5T619_MODULE)
@@ -884,6 +1060,11 @@ static void bcm2708_restart(enum reboot_mode mode, const char *cmd)
 static void bcm2708_power_off(void)
 {
 	extern char bcm2708_reboot_mode;
+
+#if defined(CONFIG_MFD_RC5T619) 
+	rc5t619_power_off(); //pmic shutdown
+#endif
+
 	if(bcm2708_reboot_mode == 'q')
 	{
 		// NOOBS < v1.3

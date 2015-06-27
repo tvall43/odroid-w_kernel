@@ -1,19 +1,19 @@
-/*
- * Core driver access RC5T619 power management chip.
+/* 
+ * driver/mfd/rc5t619.c
  *
- * Copyright (C) 2014 Hardkernel Co.,Ltd.
- * Hakjoo Kim <ruppi.kim@hardkernel.com>
+ * Core driver implementation to access RICOH RC5T619 power management chip.
+ *
+ * Copyright (C) 2012-2013 RICOH COMPANY,LTD
+ *
+ * Based on code
+ *	Copyright (C) 2011 NVIDIA Corporation
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
+ * This program is distributed in the hope that it will be useful, but WITHOUT
  * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
  * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
  * more details.
@@ -22,363 +22,806 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
  */
+/*#define DEBUG			1*/
+/*#define VERBOSE_DEBUG		1*/
 #include <linux/interrupt.h>
 #include <linux/irq.h>
-#include <linux/io.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/init.h>
-#include <linux/err.h>
 #include <linux/slab.h>
+#include <linux/gpio.h>
 #include <linux/i2c.h>
-#include <linux/pm_runtime.h>
-#include <linux/module.h>
 #include <linux/mfd/core.h>
 #include <linux/mfd/rc5t619.h>
-#include <linux/regmap.h>
-#include <mach/irqs.h>
-#include <linux/gpio.h>
-#include <linux/delay.h>
+#include <linux/power/rc5t619-battery.h>
 
-#define RICOH_ONOFFSEL_REG	0x09
 
-struct deepsleep_control_data {
+struct rc5t619 *g_rc5t619;
+struct sleep_control_data {
 	u8 reg_add;
-	u8 ds_pos_bit;
 };
 
-#define DEEPSLEEP_INIT(_id, _reg, _pos)		\
-	{					\
-		.reg_add = RC5T619_##_reg,	\
-		.ds_pos_bit = _pos,		\
-	}
+#define SLEEP_INIT(_id, _reg)		\
+	[RC5T619_DS_##_id] = {.reg_add = _reg}
 
-static struct deepsleep_control_data deepsleep_data[] = {
-	DEEPSLEEP_INIT(DC1, DC1_SLOT, 0),
-	DEEPSLEEP_INIT(DC2, DC2_SLOT, 0),
-	DEEPSLEEP_INIT(DC3, DC3_SLOT, 0),
-	DEEPSLEEP_INIT(DC4, DC4_SLOT, 0),
-	DEEPSLEEP_INIT(DC5, DC5_SLOT, 0),
+static struct sleep_control_data sleep_data[] = {
+	SLEEP_INIT(DC1, 0x16),
+	SLEEP_INIT(DC2, 0x17),
+	SLEEP_INIT(DC3, 0x18),
+	SLEEP_INIT(DC4, 0x19),
+	SLEEP_INIT(DC5, 0x1A),
+	SLEEP_INIT(LDO1, 0x1B),
+	SLEEP_INIT(LDO2, 0x1C),
+	SLEEP_INIT(LDO3, 0x1D),
+	SLEEP_INIT(LDO4, 0x1E),
+	SLEEP_INIT(LDO5, 0x1F),
+	SLEEP_INIT(LDO6, 0x20),
+	SLEEP_INIT(LDO7, 0x21),
+	SLEEP_INIT(LDO8, 0x22),
+	SLEEP_INIT(LDO9, 0x23),
+	SLEEP_INIT(LDO10, 0x24),
+	SLEEP_INIT(PSO0, 0x25),
+	SLEEP_INIT(PSO1, 0x26),
+	SLEEP_INIT(PSO2, 0x27),
+	SLEEP_INIT(PSO3, 0x28),
+	SLEEP_INIT(PSO4, 0x29),
+	SLEEP_INIT(LDORTC1, 0x2A),
 };
 
-#if 0
-#define EXT_PWR_REQ		\
-	(RC5T619_EXT_PWRREQ1_CONTROL | RC5T619_EXT_PWRREQ2_CONTROL)
-#endif
-
-static struct mfd_cell rc5t619_subdevs[] = {
-	{.name = "rc5t619-gpio",},
-	{.name = "rc5t619-regulator",},
-	{.name = "rc5t619-rtc",      },
-//	{.name = "rc5t619-key",      }
-};
-
-static int __rc5t619_set_ext_pwrreq1_control(struct device *dev,
-	int id, int ext_pwr, int slots)
-{
-	int ret;
-	uint8_t sleepseq_val = 0;
-	unsigned int en_bit;
-	unsigned int slot_bit;
-
-	if (id == RC5T619_DS_DC1) {
-		dev_err(dev, "PWRREQ1 is invalid control for rail %d\n", id);
-		return -EINVAL;
-	}
-
-	en_bit = deepsleep_data[id].ds_pos_bit;
-	slot_bit = en_bit + 1;
-	ret = rc5t619_read(dev, deepsleep_data[id].reg_add, &sleepseq_val);
-	if (ret < 0) {
-		dev_err(dev, "Error in reading reg 0x%x\n",
-				deepsleep_data[id].reg_add);
-		return ret;
-	}
-
-	sleepseq_val &= ~(0xF << en_bit);
-	sleepseq_val |= BIT(en_bit);
-	sleepseq_val |= ((slots & 0x7) << slot_bit);
-	ret = rc5t619_set_bits(dev, RICOH_ONOFFSEL_REG, BIT(1));
-	if (ret < 0) {
-		dev_err(dev, "Error in updating the 0x%02x register\n",
-				RICOH_ONOFFSEL_REG);
-		return ret;
-	}
-
-	ret = rc5t619_write(dev, deepsleep_data[id].reg_add, sleepseq_val);
-	if (ret < 0) {
-		dev_err(dev, "Error in writing reg 0x%x\n",
-				deepsleep_data[id].reg_add);
-		return ret;
-	}
-
-	return ret;
-}
-
-static int __rc5t619_set_ext_pwrreq2_control(struct device *dev,
-	int id, int ext_pwr)
+static inline int __rc5t619_read(struct i2c_client *client,
+				  u8 reg, uint8_t *val)
 {
 	int ret;
 
-	if (id != RC5T619_DC1_SLOT) {
-		dev_err(dev, "PWRREQ2 is invalid control for rail %d\n", id);
-		return -EINVAL;
+	ret = i2c_smbus_read_byte_data(client, reg);
+	if (ret < 0) {
+		dev_err(&client->dev, "failed reading at 0x%02x\n", reg);
+		return ret;
 	}
 
-	ret = rc5t619_set_bits(dev, RICOH_ONOFFSEL_REG, BIT(2));
-	if (ret < 0)
-		dev_err(dev, "Error in updating the ONOFFSEL 0x10 register\n");
-	return ret;
-}
-
-int rc5t619_ext_power_req_config(struct device *dev, int ds_id,
-	int ext_pwr_req, int deepsleep_slot_nr)
-{
-#if 0
-	if ((ext_pwr_req & EXT_PWR_REQ) == EXT_PWR_REQ)
-		return -EINVAL;
-
-	if (ext_pwr_req & RC5T619_EXT_PWRREQ1_CONTROL)
-		return __rc5t619_set_ext_pwrreq1_control(dev, ds_id,
-				ext_pwr_req, deepsleep_slot_nr);
-
-	if (ext_pwr_req & RC5T619_EXT_PWRREQ2_CONTROL)
-		return __rc5t619_set_ext_pwrreq2_control(dev,
-			ds_id, ext_pwr_req);
-#endif 
+	*val = (uint8_t)ret;
+	dev_dbg(&client->dev, "rc5t619: reg read  reg=%x, val=%x\n",
+				reg, *val);
 	return 0;
 }
-EXPORT_SYMBOL(rc5t619_ext_power_req_config);
 
-static int rc5t619_clear_ext_power_req(struct rc5t619_dev *rc5t619,
+static inline int __rc5t619_bulk_reads(struct i2c_client *client, u8 reg,
+				int len, uint8_t *val)
+{
+	int ret;
+	int i;
+
+	ret = i2c_smbus_read_i2c_block_data(client, reg, len, val);
+	if (ret < 0) {
+		dev_err(&client->dev, "failed reading from 0x%02x\n", reg);
+		return ret;
+	}
+	for (i = 0; i < len; ++i) {
+		dev_dbg(&client->dev, "rc5t619: reg read  reg=%x, val=%x\n",
+				reg + i, *(val + i));
+	}
+	return 0;
+}
+
+static inline int __rc5t619_write(struct i2c_client *client,
+				 u8 reg, uint8_t val)
+{
+	int ret;
+
+	dev_dbg(&client->dev, "rc5t619: reg write  reg=%x, val=%x\n",
+				reg, val);
+	ret = i2c_smbus_write_byte_data(client, reg, val);
+	if (ret < 0) {
+		dev_err(&client->dev, "failed writing 0x%02x to 0x%02x\n",
+				val, reg);
+		return ret;
+	}
+
+	return 0;
+}
+
+static inline int __rc5t619_bulk_writes(struct i2c_client *client, u8 reg,
+				  int len, uint8_t *val)
+{
+	int ret;
+	int i;
+
+	for (i = 0; i < len; ++i) {
+		dev_dbg(&client->dev, "rc5t619: reg write  reg=%x, val=%x\n",
+				reg + i, *(val + i));
+	}
+
+	ret = i2c_smbus_write_i2c_block_data(client, reg, len, val);
+	if (ret < 0) {
+		dev_err(&client->dev, "failed writings to 0x%02x\n", reg);
+		return ret;
+	}
+
+	return 0;
+}
+
+static inline int set_bank_rc5t619(struct device *dev, int bank)
+{
+	struct rc5t619 *rc5t619 = dev_get_drvdata(dev);
+	int ret;
+
+	if (bank != (bank & 1))
+		return -EINVAL;
+	if (bank == rc5t619->bank_num)
+		return 0;
+	ret = __rc5t619_write(to_i2c_client(dev), RC5T619_REG_BANKSEL, bank);
+	if (!ret)
+		rc5t619->bank_num = bank;
+
+	return ret;
+}
+
+int rc5t619_write(struct device *dev, u8 reg, uint8_t val)
+{
+	struct rc5t619 *rc5t619 = dev_get_drvdata(dev);
+	int ret = 0;
+
+	mutex_lock(&rc5t619->io_lock);
+	ret = set_bank_rc5t619(dev, 0);
+	if( !ret )
+		ret = __rc5t619_write(to_i2c_client(dev), reg, val);
+	mutex_unlock(&rc5t619->io_lock);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(rc5t619_write);
+
+int rc5t619_write_bank1(struct device *dev, u8 reg, uint8_t val)
+{
+	struct rc5t619 *rc5t619 = dev_get_drvdata(dev);
+	int ret = 0;
+
+	mutex_lock(&rc5t619->io_lock);
+	ret = set_bank_rc5t619(dev, 1);
+	if( !ret ) 
+		ret = __rc5t619_write(to_i2c_client(dev), reg, val);
+	mutex_unlock(&rc5t619->io_lock);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(rc5t619_write_bank1);
+
+int rc5t619_bulk_writes(struct device *dev, u8 reg, u8 len, uint8_t *val)
+{
+	struct rc5t619 *rc5t619 = dev_get_drvdata(dev);
+	int ret = 0;
+
+	mutex_lock(&rc5t619->io_lock);
+	ret = set_bank_rc5t619(dev, 0);
+	if( !ret )
+		ret = __rc5t619_bulk_writes(to_i2c_client(dev), reg, len, val);
+	mutex_unlock(&rc5t619->io_lock);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(rc5t619_bulk_writes);
+
+int rc5t619_bulk_writes_bank1(struct device *dev, u8 reg, u8 len, uint8_t *val)
+{
+	struct rc5t619 *rc5t619 = dev_get_drvdata(dev);
+	int ret = 0;
+
+	mutex_lock(&rc5t619->io_lock);
+	ret = set_bank_rc5t619(dev, 1);
+	if( !ret ) 
+		ret = __rc5t619_bulk_writes(to_i2c_client(dev), reg, len, val);
+	mutex_unlock(&rc5t619->io_lock);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(rc5t619_bulk_writes_bank1);
+
+int rc5t619_read(struct device *dev, u8 reg, uint8_t *val)
+{
+	struct rc5t619 *rc5t619 = dev_get_drvdata(dev);
+	int ret = 0;
+
+	mutex_lock(&rc5t619->io_lock);
+	ret = set_bank_rc5t619(dev, 0);
+	if( !ret )
+		ret = __rc5t619_read(to_i2c_client(dev), reg, val);
+	mutex_unlock(&rc5t619->io_lock);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(rc5t619_read);
+
+int rc5t619_read_bank1(struct device *dev, u8 reg, uint8_t *val)
+{
+	struct rc5t619 *rc5t619 = dev_get_drvdata(dev);
+	int ret = 0;
+
+	mutex_lock(&rc5t619->io_lock);
+	ret = set_bank_rc5t619(dev, 1);
+	if( !ret )
+		ret =  __rc5t619_read(to_i2c_client(dev), reg, val);
+	mutex_unlock(&rc5t619->io_lock);
+
+	return ret;
+}
+
+EXPORT_SYMBOL_GPL(rc5t619_read_bank1);
+
+int rc5t619_bulk_reads(struct device *dev, u8 reg, u8 len, uint8_t *val)
+{
+	struct rc5t619 *rc5t619 = dev_get_drvdata(dev);
+	int ret = 0;
+
+	mutex_lock(&rc5t619->io_lock);
+	ret = set_bank_rc5t619(dev, 0);
+	if( !ret ) 
+		ret = __rc5t619_bulk_reads(to_i2c_client(dev), reg, len, val);
+	mutex_unlock(&rc5t619->io_lock);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(rc5t619_bulk_reads);
+
+int rc5t619_bulk_reads_bank1(struct device *dev, u8 reg, u8 len, uint8_t *val)
+{
+	struct rc5t619 *rc5t619 = dev_get_drvdata(dev);
+	int ret = 0;
+
+	mutex_lock(&rc5t619->io_lock);
+	ret = set_bank_rc5t619(dev, 1);
+	if( !ret ) 
+		ret = __rc5t619_bulk_reads(to_i2c_client(dev), reg, len, val);
+	mutex_unlock(&rc5t619->io_lock);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(rc5t619_bulk_reads_bank1);
+
+int rc5t619_set_bits(struct device *dev, u8 reg, uint8_t bit_mask)
+{
+	struct rc5t619 *rc5t619 = dev_get_drvdata(dev);
+	uint8_t reg_val;
+	int ret = 0;
+
+	mutex_lock(&rc5t619->io_lock);
+	ret = set_bank_rc5t619(dev, 0);
+	if (!ret) {
+		ret = __rc5t619_read(to_i2c_client(dev), reg, &reg_val);
+		if (ret)
+			goto out;
+
+		if ((reg_val & bit_mask) != bit_mask) {
+			reg_val |= bit_mask;
+			ret = __rc5t619_write(to_i2c_client(dev), reg,
+								 reg_val);
+		}
+	}
+out:
+	mutex_unlock(&rc5t619->io_lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(rc5t619_set_bits);
+
+int rc5t619_clr_bits(struct device *dev, u8 reg, uint8_t bit_mask)
+{
+	struct rc5t619 *rc5t619 = dev_get_drvdata(dev);
+	uint8_t reg_val;
+	int ret = 0;
+
+	mutex_lock(&rc5t619->io_lock);
+	ret = set_bank_rc5t619(dev, 0);
+	if( !ret ){
+		ret = __rc5t619_read(to_i2c_client(dev), reg, &reg_val);
+		if (ret)
+			goto out;
+
+		if (reg_val & bit_mask) {
+			reg_val &= ~bit_mask;
+			ret = __rc5t619_write(to_i2c_client(dev), reg,
+								 reg_val);
+		}
+	}
+out:
+	mutex_unlock(&rc5t619->io_lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(rc5t619_clr_bits);
+
+int rc5t619_update(struct device *dev, u8 reg, uint8_t val, uint8_t mask)
+{
+	struct rc5t619 *rc5t619 = dev_get_drvdata(dev);
+	uint8_t reg_val;
+	int ret = 0;
+
+	mutex_lock(&rc5t619->io_lock);
+	ret = set_bank_rc5t619(dev, 0);
+	if( !ret ){
+		ret = __rc5t619_read(rc5t619->client, reg, &reg_val);
+		if (ret)
+			goto out;
+
+		if ((reg_val & mask) != val) {
+			reg_val = (reg_val & ~mask) | (val & mask);
+			ret = __rc5t619_write(rc5t619->client, reg, reg_val);
+		}
+	}
+out:
+	mutex_unlock(&rc5t619->io_lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(rc5t619_update);
+
+int rc5t619_update_bank1(struct device *dev, u8 reg, uint8_t val, uint8_t mask)
+{
+	struct rc5t619 *rc5t619 = dev_get_drvdata(dev);
+	uint8_t reg_val;
+	int ret = 0;
+
+	mutex_lock(&rc5t619->io_lock);
+	ret = set_bank_rc5t619(dev, 1);
+	if( !ret ){
+		ret = __rc5t619_read(rc5t619->client, reg, &reg_val);
+		if (ret)
+			goto out;
+
+		if ((reg_val & mask) != val) {
+			reg_val = (reg_val & ~mask) | (val & mask);
+			ret = __rc5t619_write(rc5t619->client, reg, reg_val);
+		}
+	}
+out:
+	mutex_unlock(&rc5t619->io_lock);
+	return ret;
+}
+
+static struct i2c_client *rc5t619_i2c_client;
+int rc5t619_power_off(void)
+{
+	int ret;
+	uint8_t val;
+	int err = -1;
+	int charge_state;
+	uint8_t status;
+	struct rc5t619 *rc5t619 = g_rc5t619;
+
+//	val = g_soc;
+//	val &= 0x7f;
+	rc5t619_read(rc5t619->dev, 0xBD, &status);
+	charge_state = (status & 0x1F);
+//	supply_state = ((status & 0xC0) >> 6);
+
+//	ret = rc5t619_write(rc5t619->dev, RC5T619_PSWR, val);
+//	if (ret < 0)
+//		dev_err(rc5t619->dev, "Error in writing PSWR_REG\n");
+//
+//	if (g_fg_on_mode == 0) {
+//		ret = rc5t619_clr_bits(rc5t619->dev,
+//					 RC5T619_FG_CTRL, 0x01);
+//		if (ret < 0)
+//			dev_err(rc5t619->dev, "Error in writing FG_CTRL\n");
+//	}
+	
+	/* set rapid timer 300 min */
+	err = rc5t619_set_bits(rc5t619->dev, TIMSET_REG, 0x03);
+	if (err < 0)
+		dev_err(rc5t619->dev, "Error in writing the TIMSET_Reg\n");
+  
+        ret = rc5t619_write(rc5t619->dev, RC5T619_INTC_INTEN, 0); 
+
+	if (!rc5t619_i2c_client)
+		return -EINVAL;
+	ret = rc5t619_clr_bits(rc5t619->dev,RC5T619_PWR_REP_CNT,(0x1<<0));//Not repeat power ON after power off(Power Off/N_OE)
+
+	if(( charge_state == CHG_STATE_CHG_TRICKLE)||( charge_state == CHG_STATE_CHG_RAPID))
+		 rc5t619_set_bits(rc5t619->dev, RC5T619_PWR_REP_CNT,(0x1<<0));//Power OFF
+	ret = rc5t619_set_bits(rc5t619->dev, RC5T619_PWR_SLP_CNT,(0x1<<0));//Power OFF
+	if (ret < 0) {
+		dev_err(rc5t619->dev, "rc5t619 power off error!\n");
+		return err;
+	}
+	return 0;
+}
+EXPORT_SYMBOL_GPL(rc5t619_power_off);
+
+static int rc5t619_gpio_get(struct gpio_chip *gc, unsigned offset)
+{
+	struct rc5t619 *rc5t619 = container_of(gc, struct rc5t619, gpio_chip);
+	uint8_t val;
+	int ret;
+
+	ret = rc5t619_read(rc5t619->dev, RC5T619_GPIO_MON_IOIN, &val);
+	if (ret < 0)
+		return ret;
+
+	return ((val & (0x1 << offset)) != 0);
+}
+
+static void rc5t619_gpio_set(struct gpio_chip *gc, unsigned offset,
+			int value)
+{
+	struct rc5t619 *rc5t619 = container_of(gc, struct rc5t619, gpio_chip);
+	if (value)
+		rc5t619_set_bits(rc5t619->dev, RC5T619_GPIO_IOOUT,
+						1 << offset);
+	else
+		rc5t619_clr_bits(rc5t619->dev, RC5T619_GPIO_IOOUT,
+						1 << offset);
+}
+
+static int rc5t619_gpio_input(struct gpio_chip *gc, unsigned offset)
+{
+	struct rc5t619 *rc5t619 = container_of(gc, struct rc5t619, gpio_chip);
+
+	return rc5t619_clr_bits(rc5t619->dev, RC5T619_GPIO_IOSEL,
+						1 << offset);
+}
+
+static int rc5t619_gpio_output(struct gpio_chip *gc, unsigned offset,
+				int value)
+{
+	struct rc5t619 *rc5t619 = container_of(gc, struct rc5t619, gpio_chip);
+
+	rc5t619_gpio_set(gc, offset, value);
+	return rc5t619_set_bits(rc5t619->dev, RC5T619_GPIO_IOSEL,
+						1 << offset);
+}
+
+static int rc5t619_gpio_to_irq(struct gpio_chip *gc, unsigned off)
+{
+	struct rc5t619 *rc5t619 = container_of(gc, struct rc5t619, gpio_chip);
+
+	if ((off >= 0) && (off < 8))
+		return rc5t619->irq_base + RC5T619_IRQ_GPIO0 + off;
+
+	return -EIO;
+}
+
+
+static void rc5t619_gpio_init(struct rc5t619 *rc5t619,
 	struct rc5t619_platform_data *pdata)
 {
 	int ret;
 	int i;
-	uint8_t on_off_val = 0;
+	struct rc5t619_gpio_init_data *ginit;
 
-	/*  Clear ONOFFSEL register */
-	if (pdata->enable_shutdown)
-		on_off_val = 0x1;
+	if (pdata->gpio_base  <= 0)
+		return;
 
-	ret = rc5t619_write(rc5t619->dev, RICOH_ONOFFSEL_REG, on_off_val);
-	if (ret < 0)
-		dev_warn(rc5t619->dev, "Error in writing reg %d error: %d\n",
-					RICOH_ONOFFSEL_REG, ret);
+	for (i = 0; i < pdata->num_gpioinit_data; ++i) {
+		ginit = &pdata->gpio_init_data[i];
+
+		if (!ginit->init_apply)
+			continue;
+
+		if (ginit->output_mode_en) {
+			/* GPIO output mode */
+			if (ginit->output_val)
+				/* output H */
+				ret = rc5t619_set_bits(rc5t619->dev,
+					RC5T619_GPIO_IOOUT, 1 << i);
+			else
+				/* output L */
+				ret = rc5t619_clr_bits(rc5t619->dev,
+					RC5T619_GPIO_IOOUT, 1 << i);
+			if (!ret)
+				ret = rc5t619_set_bits(rc5t619->dev,
+					RC5T619_GPIO_IOSEL, 1 << i);
+		} else
+			/* GPIO input mode */
+			ret = rc5t619_clr_bits(rc5t619->dev,
+					RC5T619_GPIO_IOSEL, 1 << i);
+
+		/* if LED function enabled in OTP */
+		if (ginit->led_mode) {
+			/* LED Mode 1 */
+			if (i == 0)	/* GP0 */
+				ret = rc5t619_set_bits(rc5t619->dev,
+					 RC5T619_GPIO_LED_FUNC,
+					 0x04 | (ginit->led_func & 0x03));
+			if (i == 1)	/* GP1 */
+				ret = rc5t619_set_bits(rc5t619->dev,
+					 RC5T619_GPIO_LED_FUNC,
+					 0x40 | (ginit->led_func & 0x03) << 4);
+
+		}
 
 
-	/* Clear sleep sequence register */
-	for (i = RC5T619_DC1_SLOT; i <= RC5T619_DC4_SLOT; ++i) {
-		ret = rc5t619_write(rc5t619->dev, i, 0x0);
 		if (ret < 0)
-			dev_warn(rc5t619->dev,
-				"Error in writing reg 0x%02x error: %d\n",
-				i, ret);
+			dev_err(rc5t619->dev, "Gpio %d init "
+				"dir configuration failed: %d\n", i, ret);
+
 	}
+
+	rc5t619->gpio_chip.owner		= THIS_MODULE;
+	rc5t619->gpio_chip.label		= rc5t619->client->name;
+	rc5t619->gpio_chip.dev			= rc5t619->dev;
+	rc5t619->gpio_chip.base		= pdata->gpio_base;
+	rc5t619->gpio_chip.ngpio		= RC5T619_NR_GPIO;
+	rc5t619->gpio_chip.can_sleep	= 1;
+
+	rc5t619->gpio_chip.direction_input	= rc5t619_gpio_input;
+	rc5t619->gpio_chip.direction_output	= rc5t619_gpio_output;
+	rc5t619->gpio_chip.set			= rc5t619_gpio_set;
+	rc5t619->gpio_chip.get			= rc5t619_gpio_get;
+	rc5t619->gpio_chip.to_irq	  	= rc5t619_gpio_to_irq;
+
+	ret = gpiochip_add(&rc5t619->gpio_chip);
+	if (ret)
+		dev_warn(rc5t619->dev, "GPIO registration failed: %d\n", ret);
+}
+
+static int rc5t619_remove_subdev(struct device *dev, void *unused)
+{
+	platform_device_unregister(to_platform_device(dev));
 	return 0;
 }
 
-static bool volatile_reg(struct device *dev, unsigned int reg)
+static int rc5t619_remove_subdevs(struct rc5t619 *rc5t619)
 {
-	/* Enable caching in interrupt registers */
-	switch (reg) {
-	case RC5T619_INT_EN_SYS:
-	case RC5T619_INT_EN_DCDC:
-	case RC5T619_INT_EN_RTC:
-	case RC5T619_INT_EN_ADC1:
-	case RC5T619_INT_EN_ADC2:
-	case RC5T619_INT_EN_ADC3:
-	case RC5T619_INT_EN_GPIO: 
-	case RC5T619_INT_EN_GPIO2: 
-		return false;
-
-	case RC5T619_GPIO_MON_IOIN:
-		/* This is gpio input register */
-		return true;
-
-	default:
-		/* Enable caching in gpio registers */
-		if ((reg >= RC5T619_GPIO_IOSEL) &&
-				(reg <= RC5T619_GPIO_LED_FUNC))
-			return false;
-
-		/* Enable caching in sleep seq registers */
-		if ((reg >= RC5T619_DC1_SLOT) && (reg <= RC5T619_LDO10_SLOT))
-			return false;
-
-		/* Enable caching of regulator registers */
-		if ((reg >= RC5T619_DC1CTL) && (reg <= RC5T619_LDO5DAC))
-			return false;
-		if ((reg >= RC5T619_LDOEN1) &&
-					(reg <= RC5T619_LDO10DAC))
-			return false;
-
-		break;
-	}
-
-	return true;
+	return device_for_each_child(rc5t619->dev, NULL,
+				     rc5t619_remove_subdev);
 }
 
-static const struct regmap_config rc5t619_regmap_config = {
-	.reg_bits = 8,
-	.val_bits = 8,
-	.volatile_reg = volatile_reg,
-	.max_register = RC5T619_MAX_REGS,
-	.num_reg_defaults_raw = RC5T619_MAX_REGS,
-	.cache_type = REGCACHE_RBTREE,
-};
-
-#define RC5T619_HOST_IRQ_GPIO 32
-static const struct rc5t619_platform_data rc5t619_data_init = {
-	.gpio_base = BCM2708_NR_GPIOS,
-	.irq_gpio = RC5T619_HOST_IRQ_GPIO,
-	.irq_base = GPIO_IRQ_START,
-};
-
-static const struct regmap_irq rc5t619_pwr_irqs[] = {
-	{ .mask = RC5T619_IRQ_POWER_ON, },
-	{ .mask = RC5T619_IRQ_EXTIN, },
-
-};
-
-static const struct regmap_irq_chip rc5t619_pwr_irq_chip = {
-	.name		= "rc5t619-pwr",
-	.status_base	= RC5T619_INT_IR_SYS,
-	.mask_base	= RC5T619_INT_EN_SYS,
-	.mask_invert	= true,
-	.num_regs	= 1,
-	.irqs		= rc5t619_pwr_irqs,
-	.num_irqs	= ARRAY_SIZE(rc5t619_pwr_irqs),
-};
-
-static const struct regmap_irq rc5t619_rtc_irqs[] = {
-	{ .mask = BIT(0), },
-};
-
-static const struct regmap_irq_chip rc5t619_rtc_irq_chip = {
-	.name		= "rc5t619-rtc",
-	.status_base	= RC5T619_INT_IR_RTC,
-	.mask_base	= RC5T619_INT_EN_RTC,
-	.mask_invert	= true,
-	.num_regs	= 1,
-	.irqs		= rc5t619_rtc_irqs,
-	.num_irqs	= ARRAY_SIZE(rc5t619_rtc_irqs),
-};
-
-static inline void gpio_wr(void __iomem *base, unsigned reg,
-		u32 val)
+static int rc5t619_add_subdevs(struct rc5t619 *rc5t619,
+				struct rc5t619_platform_data *pdata)
 {
-	writel(val, base + reg);
-}
+	struct rc5t619_subdev_info *subdev;
+	struct platform_device *pdev;
+	int i, ret = 0;
 
-#define GPIO_REG_OFFSET(p)	((p) / 32)
-#define GPIO_REG_SHIFT(p)	((p) % 32)
-#define GPPUD		0x94	/* Pin Pull-up/down Enable */
-#define GPPUDCLK0	0x98	/* Pin Pull-up/down Enable Clock */
+	for (i = 0; i < pdata->num_subdevs; i++) {
+		subdev = &pdata->subdevs[i];
 
-static inline void gpio_enable_pullup(unsigned pin)
-{
-	u32 off, bit;
-	void __iomem *base = __io_address(GPIO_BASE);
+		pdev = platform_device_alloc(subdev->name, subdev->id);
 
-	off = GPIO_REG_OFFSET(pin);
-	bit = GPIO_REG_SHIFT(pin);
-	gpio_wr(base, GPPUD, 0x2);
-	udelay(150);
-	gpio_wr(base, GPPUDCLK0+ (off*4), BIT(bit));
-	udelay(150);
-	gpio_wr(base, GPPUDCLK0+ (off*4), 0);
-}
+		pdev->dev.parent = rc5t619->dev;
+		pdev->dev.platform_data = subdev->platform_data;
 
-static int rc5t619_i2c_probe(struct i2c_client *i2c,
-			      const struct i2c_device_id *id)
-{
-	struct rc5t619_dev *rc5t619;
-	const struct rc5t619_platform_data *pdata = dev_get_platdata(&i2c->dev);
-	int ret;
-	uint8_t reg = 0;
-
-	if (!pdata) {
-		dev_err(&i2c->dev, "NO Platform data, using defauts\n");
-		pdata = &rc5t619_data_init;
+		ret = platform_device_add(pdev);
+		if (ret)
+			goto failed;
 	}
-
-	rc5t619 = devm_kzalloc(&i2c->dev, sizeof(struct rc5t619_dev), GFP_KERNEL);
-	if (!rc5t619) {
-		dev_err(&i2c->dev, "Memory allocation failed\n");
-		return -ENOMEM;
-	}
-
-	rc5t619->dev = &i2c->dev;
-	i2c_set_clientdata(i2c, rc5t619);
-	rc5t619->i2c = i2c;
-	gpio_enable_pullup(pdata->irq_gpio);
-	rc5t619->irq = i2c->irq = gpio_to_irq(pdata->irq_gpio);
-
-	rc5t619->regmap = devm_regmap_init_i2c(i2c, &rc5t619_regmap_config);
-	if (IS_ERR(rc5t619->regmap)) {
-		ret = PTR_ERR(rc5t619->regmap);
-		dev_err(&i2c->dev, "regmap initialization failed: %d\n", ret);
-		return ret;
-	}
-
-	ret = rc5t619_clear_ext_power_req(rc5t619, pdata);
-	if (ret < 0)
-		return ret;
-
-	ret = regmap_add_irq_chip(rc5t619->regmap, rc5t619->irq,
-				IRQF_ONESHOT | IRQF_SHARED | IRQF_TRIGGER_LOW, 0,
-				&rc5t619_pwr_irq_chip,
-				&rc5t619->irq_data_pwr);
-
-	if (ret != 0) {
-		dev_err(&i2c->dev, "failed to add power irq chip: %d\n", ret);
-		goto err_irq_pwr;
-	}
-
-	ret = regmap_add_irq_chip(rc5t619->regmap, rc5t619->irq,
-				IRQF_ONESHOT | IRQF_SHARED | IRQF_TRIGGER_LOW, 0,
-				&rc5t619_rtc_irq_chip,
-				&rc5t619->irq_data_rtc);
-
-	if (ret != 0) {
-		dev_err(&i2c->dev, "failed to add rtc irq chip: %d\n", ret);
-		goto err_irq_rtc;
-	}
-
-	rc5t619_read(rc5t619->dev, 0xb7, &reg);
-	rc5t619_write(rc5t619->dev, 0xb7, 0x14);
-
-	ret = mfd_add_devices(rc5t619->dev, -1, rc5t619_subdevs,
-			      ARRAY_SIZE(rc5t619_subdevs), NULL, 0, NULL);
-	if (ret) {
-		dev_err(&i2c->dev, "add mfd devices failed: %d\n", ret);
-		goto err_add_devs;
-	}
-
 	return 0;
 
-err_add_devs:
-	mfd_remove_devices(rc5t619->dev);
-	regmap_del_irq_chip(rc5t619->irq, rc5t619->irq_data_rtc);
-err_irq_rtc:
-	regmap_del_irq_chip(rc5t619->irq, rc5t619->irq_data_pwr);
-err_irq_pwr:
+failed:
+	rc5t619_remove_subdevs(rc5t619);
 	return ret;
 }
 
-static int  rc5t619_i2c_remove(struct i2c_client *i2c)
+#ifdef CONFIG_DEBUG_FS
+#include <linux/debugfs.h>
+#include <linux/seq_file.h>
+static void print_regs(const char *header, struct seq_file *s,
+		struct i2c_client *client, int start_offset,
+		int end_offset)
 {
-	struct rc5t619_dev *rc5t619 = i2c_get_clientdata(i2c);
+	uint8_t reg_val;
+	int i;
+	int ret;
 
-	mfd_remove_devices(rc5t619->dev);
-	regmap_del_irq_chip(rc5t619->irq, rc5t619->irq_data_rtc);
-	regmap_del_irq_chip(rc5t619->irq, rc5t619->irq_data_pwr);
+	seq_printf(s, "%s\n", header);
+	for (i = start_offset; i <= end_offset; ++i) {
+		ret = __rc5t619_read(client, i, &reg_val);
+		if (ret >= 0)
+			seq_printf(s, "Reg 0x%02x Value 0x%02x\n", i, reg_val);
+	}
+	seq_printf(s, "------------------\n");
+}
+
+static int dbg_ricoh_show(struct seq_file *s, void *unused)
+{
+	struct rc5t619 *ricoh = s->private;
+	struct i2c_client *client = ricoh->client;
+
+	seq_printf(s, "RC5T619 Registers\n");
+	seq_printf(s, "------------------\n");
+
+	print_regs("System Regs",		s, client, 0x0, 0x05);
+	print_regs("Power Control Regs",	s, client, 0x07, 0x2B);
+	print_regs("DCDC  Regs",		s, client, 0x2C, 0x43);
+	print_regs("LDO   Regs",		s, client, 0x44, 0x61);
+	print_regs("ADC   Regs",		s, client, 0x64, 0x8F);
+	print_regs("GPIO  Regs",		s, client, 0x90, 0x98);
+	print_regs("INTC  Regs",		s, client, 0x9C, 0x9E);
+	print_regs("RTC   Regs",		s, client, 0xA0, 0xAF);
+	print_regs("OPT   Regs",		s, client, 0xB0, 0xB1);
+	print_regs("CHG   Regs",		s, client, 0xB2, 0xDF);
+	print_regs("FUEL  Regs",		s, client, 0xE0, 0xFC);
 	return 0;
 }
 
+static int dbg_ricoh_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, dbg_ricoh_show, inode->i_private);
+}
+
+static const struct file_operations debug_fops = {
+	.open		= dbg_ricoh_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+static void __init rc5t619_debuginit(struct rc5t619 *ricoh)
+{
+	(void)debugfs_create_file("rc5t619", S_IRUGO, NULL,
+			ricoh, &debug_fops);
+}
+#else
+static void print_regs(const char *header, struct i2c_client *client,
+		int start_offset, int end_offset)
+{
+	uint8_t reg_val;
+	int i;
+	int ret;
+
+	printk(KERN_INFO "%s\n", header);
+	for (i = start_offset; i <= end_offset; ++i) {
+		ret = __rc5t619_read(client, i, &reg_val);
+		if (ret >= 0)
+			printk(KERN_INFO "Reg 0x%02x Value 0x%02x\n",
+							 i, reg_val);
+	}
+	printk(KERN_INFO "------------------\n");
+}
+static void __init rc5t619_debuginit(struct rc5t619 *ricoh)
+{
+	struct i2c_client *client = ricoh->client;
+
+	printk(KERN_INFO "RC5T619 Registers\n");
+	printk(KERN_INFO "------------------\n");
+
+	print_regs("System Regs",		client, 0x0, 0x05);
+	print_regs("Power Control Regs",	client, 0x07, 0x2B);
+	print_regs("DCDC  Regs",		client, 0x2C, 0x43);
+	print_regs("LDO   Regs",		client, 0x44, 0x5C);
+	print_regs("ADC   Regs",		client, 0x64, 0x8F);
+	print_regs("GPIO  Regs",		client, 0x90, 0x9B);
+	print_regs("INTC  Regs",		client, 0x9C, 0x9E);
+	print_regs("OPT   Regs",		client, 0xB0, 0xB1);
+	print_regs("CHG   Regs",		client, 0xB2, 0xDF);
+	print_regs("FUEL  Regs",		client, 0xE0, 0xFC);
+
+	return 0;
+}
+#endif
+
+static void rc5t619_noe_init(struct rc5t619 *ricoh)
+{
+	struct i2c_client *client = ricoh->client;
+	
+	__rc5t619_write(client, RC5T619_PWR_NOE_TIMSET, 0x0); //N_OE timer setting to 128mS
+	__rc5t619_write(client, RC5T619_PWR_REP_CNT, 0x1); //Repeat power ON after reset (Power Off/N_OE)
+}
+
+static int rc5t619_i2c_probe(struct i2c_client *client,
+			      const struct i2c_device_id *id)
+{
+	struct rc5t619 *rc5t619;
+	struct rc5t619_platform_data *pdata = client->dev.platform_data;
+	int ret;
+	uint8_t control;
+	printk(KERN_INFO "%s\n", __func__);
+
+	rc5t619 = kzalloc(sizeof(struct rc5t619), GFP_KERNEL);
+	if (rc5t619 == NULL)
+		return -ENOMEM;
+
+	rc5t619->client = client;
+	rc5t619->dev = &client->dev;
+	i2c_set_clientdata(client, rc5t619);
+
+	mutex_init(&rc5t619->io_lock);
+
+	ret = rc5t619_read(rc5t619->dev, 0x36, &control);
+	if ((control < 0) || (control == 0xff)) {
+		printk(KERN_INFO "The device is not rc5t619\n");
+		return 0;
+	}
+	/***************set noe time 128ms**************/
+	ret = rc5t619_set_bits(rc5t619->dev,0x11,(0x1 <<3));
+	ret = rc5t619_clr_bits(rc5t619->dev,0x11,(0x7 <<0));
+	ret = rc5t619_clr_bits(rc5t619->dev,0x11,(0x1 <<3));
+ 	/**********************************************/
+
+	/***************set PKEY long press time 0sec*******/
+	ret = rc5t619_set_bits(rc5t619->dev,0x10,(0x1 <<7));
+	ret = rc5t619_clr_bits(rc5t619->dev,0x10,(0x1 <<3));
+	ret = rc5t619_clr_bits(rc5t619->dev,0x10,(0x1 <<7));
+ 	/**********************************************/
+
+	rc5t619->bank_num = 0;
+
+//	ret = pdata->init_port(client->irq); // For init PMIC_IRQ port
+	if (client->irq) {
+		ret = rc5t619_irq_init(rc5t619, client->irq, pdata->irq_base);
+		if (ret) {
+			dev_err(&client->dev, "IRQ init failed: %d\n", ret);
+			goto err_irq_init;
+		}
+	}
+	
+	ret = rc5t619_add_subdevs(rc5t619, pdata);
+	if (ret) {
+		dev_err(&client->dev, "add devices failed: %d\n", ret);
+		goto err_add_devs;
+	}
+	rc5t619_noe_init(rc5t619);
+	
+	g_rc5t619 = rc5t619;
+	if (pdata && pdata->pre_init) {
+		ret = pdata->pre_init(rc5t619);
+		if (ret != 0) {
+			dev_err(rc5t619->dev, "pre_init() failed: %d\n", ret);
+			goto err;
+		}
+	}
+
+	rc5t619_gpio_init(rc5t619, pdata);
+
+	rc5t619_debuginit(rc5t619);
+
+	if (pdata && pdata->post_init) {
+		ret = pdata->post_init(rc5t619);
+		if (ret != 0) {
+			dev_err(rc5t619->dev, "post_init() failed: %d\n", ret);
+			goto err;
+		}
+	}
+
+	rc5t619_i2c_client = client;
+	return 0;
+err:
+	mfd_remove_devices(rc5t619->dev);
+	kfree(rc5t619);
+err_add_devs:
+	if (client->irq)
+		rc5t619_irq_exit(rc5t619);
+err_irq_init:
+	kfree(rc5t619);
+	return ret;
+}
+
+static int rc5t619_i2c_remove(struct i2c_client *client)
+{
+	struct rc5t619 *rc5t619 = i2c_get_clientdata(client);
+
+	if (client->irq)
+		rc5t619_irq_exit(rc5t619);
+
+	rc5t619_remove_subdevs(rc5t619);
+	kfree(rc5t619);
+	return 0;
+}
+
+#ifdef CONFIG_PM
+static int rc5t619_i2c_suspend(struct i2c_client *client, pm_message_t state)
+{
+	if (client->irq)
+		disable_irq(client->irq);
+	return 0;
+}
+
+int pwrkey_wakeup;
+static int rc5t619_i2c_resume(struct i2c_client *client)
+{
+	uint8_t reg_val=0;
+	int ret;
+
+	ret = __rc5t619_read(client, RC5T619_INT_IR_SYS, &reg_val);
+	if(reg_val & 0x01) { //If PWR_KEY wakeup
+		pwrkey_wakeup = 1;
+		__rc5t619_write(client, RC5T619_INT_IR_SYS, 0x0); //Clear PWR_KEY IRQ
+	}
+
+	enable_irq(client->irq);
+	return 0;
+}
+
+#endif
+
 static const struct i2c_device_id rc5t619_i2c_id[] = {
-	{.name = "rc5t619", .driver_data = 0},
+	{"rc5t619", 0},
 	{}
 };
 
@@ -391,14 +834,25 @@ static struct i2c_driver rc5t619_i2c_driver = {
 		   },
 	.probe = rc5t619_i2c_probe,
 	.remove = rc5t619_i2c_remove,
+#ifdef CONFIG_PM
+	.suspend = rc5t619_i2c_suspend,
+	.resume = rc5t619_i2c_resume,
+#endif
 	.id_table = rc5t619_i2c_id,
 };
 
+
 static int __init rc5t619_i2c_init(void)
 {
-	return i2c_add_driver(&rc5t619_i2c_driver);
+	int ret = -ENODEV;
+	ret = i2c_add_driver(&rc5t619_i2c_driver);
+	if (ret != 0)
+		pr_err("Failed to register I2C driver: %d\n", ret);
+
+	return ret;
 }
-subsys_initcall(rc5t619_i2c_init);
+
+subsys_initcall_sync(rc5t619_i2c_init);
 
 static void __exit rc5t619_i2c_exit(void)
 {
@@ -407,6 +861,6 @@ static void __exit rc5t619_i2c_exit(void)
 
 module_exit(rc5t619_i2c_exit);
 
-MODULE_DESCRIPTION("RICOH rc5t619 multi-function core driver");
-MODULE_AUTHOR("Hakjoo Kim <ruppi.kim@hardkernel.com>");
-MODULE_LICENSE("GPL v2");
+MODULE_DESCRIPTION("RICOH RC5T619 PMU multi-function core driver");
+MODULE_AUTHOR("zhangqing <zhangqing@rock-chips.com>");
+MODULE_LICENSE("GPL");

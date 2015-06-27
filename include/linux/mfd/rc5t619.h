@@ -1,41 +1,41 @@
-/*
- * rc5t619.h - Driver for the Maxim 77686
+/* 
+ * include/linux/mfd/rc5t619.h
  *
- * Copyright (C) 2014 Hardkernel Co.,Ltd.
- * Hakjoo Kim <ruppi.kim@hardkernel.com>
+ * Core driver interface to access RICOH RC5T619 power management chip.
+ *
+ * Copyright (C) 2012-2013 RICOH COMPANY,LTD
+ *
+ * Based on code
+ *	Copyright (C) 2011 NVIDIA Corporation
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * This program is distributed in the hope that it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
+ * more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
  *
- * RC5T619 has PMIC, Charger, RTC, ADC, GPIO devices.
- * The devices share the same I2C bus and included in
- * this mfd driver.
  */
+
 #ifndef __LINUX_MFD_RC5T619_H
 #define __LINUX_MFD_RC5T619_H
 
 #include <linux/mutex.h>
 #include <linux/types.h>
-#include <linux/regmap.h>
+#include <linux/gpio.h>
+#include <linux/i2c.h>
 
-#define RC5T619_REG_DEVICE_ID 0x02
 /* Maximum number of main interrupts */
-#define RC5T619_MAX_INTERRUPT_MASKS	13
-#define RC5T619_MAX_INTERRUPT_MASK_REGS    13
-#define RC5T619_MAX_INTERRUPT_EN_REGS    12
-#define RC5T619_MAX_MAIN_INTERRUPT	7
-#define RC5T619_MAX_GPEDGE_REG		2
+#define MAX_INTERRUPT_MASKS	13
+#define MAX_MAIN_INTERRUPT	7
+#define MAX_GPEDGE_REG		2
 
 /* Power control register */
 #define RC5T619_PWR_WD			0x0B
@@ -48,19 +48,19 @@
 #define RC5T619_PWR_IRSEL		0x15
 
 /* Interrupt enable register */
-#define RC5T619_INT_EN_SYS     0x12
-#define RC5T619_INT_EN_DCDC        0x40
-#define RC5T619_INT_EN_RTC     0xAE
-#define RC5T619_INT_EN_ADC1        0x88
-#define RC5T619_INT_EN_ADC2        0x89
-#define RC5T619_INT_EN_ADC3        0x8A
-#define RC5T619_INT_EN_GPIO        0x94
-#define RC5T619_INT_EN_GPIO2       0x98 // dummy
-#define RC5T619_INT_MSK_CHGCTR     0xBE
-#define RC5T619_INT_MSK_CHGSTS1    0xBF
-#define RC5T619_INT_MSK_CHGSTS2    0xC0
-#define RC5T619_INT_MSK_CHGERR     0xC1
-#define RC5T619_INT_MSK_CHGEXTIF   0xD1
+#define RC5T619_INT_EN_SYS		0x12
+#define RC5T619_INT_EN_DCDC		0x40
+#define RC5T619_INT_EN_RTC		0xAE
+#define RC5T619_INT_EN_ADC1		0x88
+#define RC5T619_INT_EN_ADC2		0x89
+#define RC5T619_INT_EN_ADC3		0x8A
+#define RC5T619_INT_EN_GPIO		0x94
+#define RC5T619_INT_EN_GPIO2		0x94 // dummy
+#define RC5T619_INT_MSK_CHGCTR		0xBE
+#define RC5T619_INT_MSK_CHGSTS1	0xBF
+#define RC5T619_INT_MSK_CHGSTS2	0xC0
+#define RC5T619_INT_MSK_CHGERR		0xC1
+#define RC5T619_INT_MSK_CHGEXTIF	0xD1
 
 /* Interrupt select register */
 #define RC5T619_PWR_IRSEL			0x15
@@ -90,15 +90,15 @@
 #define RC5T619_INT_IR_SYS		0x13
 #define RC5T619_INT_IR_DCDC		0x41
 #define RC5T619_INT_IR_RTC		0xAF
-#define RC5T619_INT_IR_ADC1		0x8C
-#define RC5T619_INT_IR_ADC2		0x8D
-#define RC5T619_INT_IR_ADC3		0x8E
-#define RC5T619_INT_IR_GPR		0x95
-#define RC5T619_INT_IR_GPF		0x96
-#define RC5T619_INT_IR_CHGCTR	0xC2
-#define RC5T619_INT_IR_CHGSTS1	0xC3
-#define RC5T619_INT_IR_CHGSTS2	0xC4
-#define RC5T619_INT_IR_CHGERR	0xC5
+#define RC5T619_INT_IR_ADCL		0x8C
+#define RC5T619_INT_IR_ADCH		0x8D
+#define RC5T619_INT_IR_ADCEND		0x8E
+#define RC5T619_INT_IR_GPIOR		0x95
+#define RC5T619_INT_IR_GPIOF		0x96
+#define RC5T619_INT_IR_CHGCTR		0xC2
+#define RC5T619_INT_IR_CHGSTS1		0xC3
+#define RC5T619_INT_IR_CHGSTS2		0xC4
+#define RC5T619_INT_IR_CHGERR		0xC5
 #define RC5T619_INT_IR_CHGEXTIF	0xD2
 
 /* GPIO register base address */
@@ -106,9 +106,9 @@
 #define RC5T619_GPIO_IOOUT		0x91
 #define RC5T619_GPIO_GPEDGE1		0x92
 #define RC5T619_GPIO_GPEDGE2		0x93
-#define RC5T619_GPIO_EN_GPIR		0x94
-#define RC5T619_GPIO_IR_GPR         0x95
-#define RC5T619_GPIO_IR_GPF         0x96
+//#define RC5T619_GPIO_EN_GPIR		0x94
+//#define RC5T619_GPIO_IR_GPR		0x95
+//#define RC5T619_GPIO_IR_GPF		0x96
 #define RC5T619_GPIO_MON_IOIN		0x97
 #define RC5T619_GPIO_LED_FUNC		0x98
 
@@ -128,103 +128,24 @@
 #define	RC5T619_FG_CTRL		0xE0
 #define	RC5T619_PSWR			0x07
 
-#define RC5T619_DC1_SLOT 0x16
-#define RC5T619_DC2_SLOT 0x17
-#define RC5T619_DC3_SLOT 0x18
-#define RC5T619_DC4_SLOT 0x19
-#define RC5T619_DC5_SLOT 0x1a
+#define RICOH_DC1_SLOT 0x16
+#define RICOH_DC2_SLOT 0x17
+#define RICOH_DC3_SLOT 0x18
+#define RICOH_DC4_SLOT 0x19
+#define RICOH_DC5_SLOT 0x1a
 
-#define RC5T619_LDO1_SLOT 0x1b
-#define RC5T619_LDO2_SLOT 0x1c
-#define RC5T619_LDO3_SLOT 0x1d
-#define RC5T619_LDO4_SLOT 0x1e
-#define RC5T619_LDO5_SLOT 0x1f
-#define RC5T619_LDO6_SLOT 0x20
-#define RC5T619_LDO7_SLOT 0x21
-#define RC5T619_LDO8_SLOT 0x22
-#define RC5T619_LDO9_SLOT 0x23
-#define RC5T619_LDO10_SLOT 0x24
+#define RICOH_LDO1_SLOT 0x1b
+#define RICOH_LDO2_SLOT 0x1c
+#define RICOH_LDO3_SLOT 0x1d
+#define RICOH_LDO4_SLOT 0x1e
+#define RICOH_LDO5_SLOT 0x1f
+#define RICOH_LDO6_SLOT 0x20
+#define RICOH_LDO7_SLOT 0x21
+#define RICOH_LDO8_SLOT 0x22
+#define RICOH_LDO9_SLOT 0x23
+#define RICOH_LDO10_SLOT 0x24
 
-#define RC5T619_DC1CTL  0x2c
-#define RC5T619_DC1CTL2 0x2d
-#define RC5T619_DC2CTL  0x2e
-#define RC5T619_DC2CTL2 0x2f
-#define RC5T619_DC3CTL  0x30
-#define RC5T619_DC3CTL2 0x31
-#define RC5T619_DC4CTL  0x33
-#define RC5T619_DC4CTL2 0x33
-#define RC5T619_DC5CTL  0x34
-#define RC5T619_DC5CTL2 0x35
 
-#define RC5T619_DC1DAC 0x36
-#define RC5T619_DC2DAC 0x37
-#define RC5T619_DC3DAC 0x38
-#define RC5T619_DC4DAC 0x39
-#define RC5T619_DC5DAC 0x3a
-
-#define RC5T619_DC1DAC_SLP 0x3b
-#define RC5T619_DC2DAC_SLP 0x3c
-#define RC5T619_DC3DAC_SLP 0x3d
-#define RC5T619_DC4DAC_SLP 0x3e
-#define RC5T619_DC5DAC_SLP 0x3f
-
-#define RC5T619_DCIREN  0x40
-#define RC5T619_DCIRQ   0x41
-#define RC5T619_DCIRMON 0x42
-
-#define RC5T619_LDOEN1 0x44
-#define RC5T619_LDOEN2 0x45
-#define RC5T619_LDODIS1 0x46
-#define RC5T619_LDODIS2 0x47
-#define RC5T619_LDOECO 0x48
-
-#define RC5T619_LDOECO_SLP 0x4a
-#define RC5T619_LDO1DAC 0x4c
-#define RC5T619_LDO2DAC 0x4d
-#define RC5T619_LDO3DAC 0x4e
-#define RC5T619_LDO4DAC 0x4f
-#define RC5T619_LDO5DAC 0x50
-#define RC5T619_LDO6DAC 0x51
-#define RC5T619_LDO7DAC 0x52
-#define RC5T619_LDO8DAC 0x53
-#define RC5T619_LDO9DAC 0x54
-#define RC5T619_LDO10DAC 0x55
-#define RC5T619_LDORTC1DAC 0x56
-#define RC5T619_LDORTC2DAC 0x57
-#define RC5T619_LDO1DAC_SLP 0x58
-#define RC5T619_LDO2DAC_SLP 0x59
-#define RC5T619_LDO3DAC_SLP 0x5a
-#define RC5T619_LDO4DAC_SLP 0x5b
-#define RC5T619_LDO5DAC_SLP 0x5c
-#define RC5T619_LDO6DAC_SLP 0x5d
-#define RC5T619_LDO7DAC_SLP 0x5e
-#define RC5T619_LDO8DAC_SLP 0x6f
-#define RC5T619_LDO9DAC_SLP 0x60
-#define RC5T619_LDO10DAC_SLP 0x61
-
-/* RTC registers */
-#define RC5T619_RTC_SEC     0xA0
-#define RC5T619_RTC_MIN     0xA1
-#define RC5T619_RTC_HOUR    0xA2
-#define RC5T619_RTC_WDAY    0xA3
-#define RC5T619_RTC_DAY     0xA4
-#define RC5T619_RTC_MONTH   0xA5
-#define RC5T619_RTC_YEAR    0xA6
-#define RC5T619_RTC_ADJ     0xA7
-#define RC5T619_RTC_AW_SEC  0xA8
-#define RC5T619_RTC_AW_MIN  0xA9
-#define RC5T619_RTC_AW_HOUR 0xAA
-#define RC5T619_RTC_AW_DAY  0xAB
-#define RC5T619_RTC_AW_MONTH    0xAC
-#define RC5T619_RTC_AD_YEAR  0xAD
-#define RC5T619_RTC_CTL1    0xAE
-#define RC5T619_RTC_CTL2    0xAF
-
-#define RC5T619_RTC_AY_MIN  0xA0
-#define RC5T619_RTC_AY_HOUR 0xF1
-#define RC5T619_RTC_AY_DAY  0xF2
-#define RC5T619_RTC_AY_MONTH 0xF3
-#define RC5T619_RTC_AY_YEAR 0xF4
 
 /* RC5T619 IRQ definitions */
 enum {
@@ -314,7 +235,7 @@ enum {
 	RC5T619_NR_IRQS,
 };
 
-/* rc5t619 gpio definitions */
+/* Ricoh619 gpio definitions */
 enum {
 	RC5T619_GPIO0,
 	RC5T619_GPIO1,
@@ -322,11 +243,10 @@ enum {
 	RC5T619_GPIO3,
 	RC5T619_GPIO4,
 
-	RC5T619_MAX_GPIO,
+	RC5T619_NR_GPIO,
 };
 
 enum rc5t619_sleep_control_id {
-	RC5T619_DS_NONE,
 	RC5T619_DS_DC1,
 	RC5T619_DS_DC2,
 	RC5T619_DS_DC3,
@@ -351,119 +271,104 @@ enum rc5t619_sleep_control_id {
 	RC5T619_DS_PSO4,
 };
 
-enum {
-	RC5T619_REGULATOR_DC1,
-	RC5T619_REGULATOR_DC2,
-	RC5T619_REGULATOR_DC3,
-	RC5T619_REGULATOR_DC4,
-	RC5T619_REGULATOR_DC5,
-	RC5T619_REGULATOR_LDO1,
-	RC5T619_REGULATOR_LDO2,
-	RC5T619_REGULATOR_LDO3,
-	RC5T619_REGULATOR_LDO4,
-	RC5T619_REGULATOR_LDO5,
-	RC5T619_REGULATOR_LDO6,
-	RC5T619_REGULATOR_LDO7,
-	RC5T619_REGULATOR_LDO8,
-	RC5T619_REGULATOR_LDO9,
-	RC5T619_REGULATOR_LDO10,
 
-	/* Should be last entry */
-	RC5T619_REGULATOR_MAX,
+struct rc5t619_subdev_info {
+	int		id;
+	const char	*name;
+	void		*platform_data;
 };
 
+/*
+struct rc5t619_rtc_platform_data {
+	int irq;
+	struct rtc_time time;
+};
+*/
 
-#define RC5T619_MAX_REGS 0xF8
-struct rc5t619_dev {
-    struct device *dev;
-	struct i2c_client *i2c;
-    struct regmap *regmap;
-
-    struct regmap_irq_chip_data *irq_data_pwr;
-    struct regmap_irq_chip_data *irq_data_rtc;
-    int irq;
-    int chip_irq;
-    bool wakeup;
-    int irq_base;
-    int irq_gpio;
-    int gpio_base;
-    struct mutex irq_lock;
-    unsigned long group_irq_en[RC5T619_MAX_MAIN_INTERRUPT];
-
-    /* For main interrupt bits in INC */
-    uint8_t     intc_inten_reg;
-
-    /* For group interrupt bits and address */
-    uint8_t     irq_en_reg[RC5T619_MAX_INTERRUPT_MASKS];
-
-    /* For gpio edge */
-    uint8_t     gpedge_cache[RC5T619_MAX_GPEDGE_REG];
-    uint8_t     gpedge_reg[RC5T619_MAX_GPEDGE_REG];
-
-    int         bank_num;
+struct rc5t619_gpio_init_data {
+	unsigned output_mode_en:1; 	/* Enable output mode during init */
+	unsigned output_val:1;  	/* Output value if it is in output mode */
+	unsigned init_apply:1;  	/* Apply init data on configuring gpios*/
+	unsigned led_mode:1;  		/* Select LED mode during init */
+	unsigned led_func:1;  		/* Set LED function if LED mode is 1 */
 };
 
+struct rc5t619 {
+	struct device		*dev;
+	struct i2c_client	*client;
+	struct mutex		io_lock;
+	int                 gpio_base;
+	struct gpio_chip	gpio_chip;
+	int                 irq_base;
+//	struct irq_chip		irq_chip;
+	int                 chip_irq;
+	struct mutex		irq_lock;
+	unsigned long		group_irq_en[MAX_MAIN_INTERRUPT];
 
-struct rc5t619_regulator_data {
-	int id;
-	struct regulator_init_data *initdata;
+	/* For main interrupt bits in INTC */
+	u8			intc_inten_cache;
+	u8			intc_inten_reg;
+
+	/* For group interrupt bits and address */
+	u8			irq_en_cache[MAX_INTERRUPT_MASKS];
+	u8			irq_en_reg[MAX_INTERRUPT_MASKS];
+
+	/* For gpio edge */
+	u8			gpedge_cache[MAX_GPEDGE_REG];
+	u8			gpedge_reg[MAX_GPEDGE_REG];
+
+	int			bank_num;
 };
 
 struct rc5t619_platform_data {
-    int irq_base;
-    int wakeup;
-    int gpio_base;
-    int irq_gpio;
-    int enable_shutdown;
-
-	struct rc5t619_regulator_data *regulators;
-	int num_regulators;
-
-	int		regulator_deepsleep_slot[RC5T619_REGULATOR_MAX];
-	unsigned long	regulator_ext_pwr_control[RC5T619_REGULATOR_MAX];
-	struct regulator_init_data *reg_init_data[RC5T619_REGULATOR_MAX];
+	int		num_subdevs;
+	struct	rc5t619_subdev_info *subdevs;
+	int (*init_port)(int irq_num); // Init GPIO for IRQ pin
+	int		gpio_base;
+	int		irq_base;
+	struct rc5t619_gpio_init_data *gpio_init_data;
+	int num_gpioinit_data;
+	bool enable_shutdown_pin;
+	int (*pre_init)(struct rc5t619 *rc5t619);
+	int (*post_init)(struct rc5t619 *rc5t619);
 };
 
-static inline int rc5t619_write(struct device *dev, uint8_t reg, uint8_t val)
-{
-    struct rc5t619_dev *rc5t619 = dev_get_drvdata(dev);
-    return regmap_write(rc5t619->regmap, reg, val);
-}
+/* ==================================== */
+/* RC5T619 Power_Key device data	*/
+/* ==================================== */
+struct rc5t619_pwrkey_platform_data {
+	int irq;
+	unsigned long delay_ms;
+};
+extern int pwrkey_wakeup;
+extern struct rc5t619 *g_rc5t619;
+/* ==================================== */
+/* RC5T619 battery device data	*/
+/* ==================================== */
+extern int g_soc;
+extern int g_fg_on_mode;
 
-static inline int rc5t619_read(struct device *dev, uint8_t reg, uint8_t *val)
-{
-    struct rc5t619_dev *rc5t619 = dev_get_drvdata(dev);
-    unsigned int ival;
-    int ret;
+extern int rc5t619_read(struct device *dev, uint8_t reg, uint8_t *val);
+extern int rc5t619_read_bank1(struct device *dev, uint8_t reg, uint8_t *val);
+extern int rc5t619_bulk_reads(struct device *dev, u8 reg, u8 count,
+								uint8_t *val);
+extern int rc5t619_bulk_reads_bank1(struct device *dev, u8 reg, u8 count,
+								uint8_t *val);
+extern int rc5t619_write(struct device *dev, u8 reg, uint8_t val);
+extern int rc5t619_write_bank1(struct device *dev, u8 reg, uint8_t val);
+extern int rc5t619_bulk_writes(struct device *dev, u8 reg, u8 count,
+								uint8_t *val);
+extern int rc5t619_bulk_writes_bank1(struct device *dev, u8 reg, u8 count,
+								uint8_t *val);
+extern int rc5t619_set_bits(struct device *dev, u8 reg, uint8_t bit_mask);
+extern int rc5t619_clr_bits(struct device *dev, u8 reg, uint8_t bit_mask);
+extern int rc5t619_update(struct device *dev, u8 reg, uint8_t val,
+								uint8_t mask);
+extern int rc5t619_update_bank1(struct device *dev, u8 reg, uint8_t val,
+								uint8_t mask);
+extern int rc5t619_power_off(void);
+extern int rc5t619_irq_init(struct rc5t619 *rc5t619, int irq, int irq_base);
+extern int rc5t619_irq_exit(struct rc5t619 *rc5t619);
+extern int rc5t619_power_off(void);
 
-    ret = regmap_read(rc5t619->regmap, reg, &ival);
-    if (!ret)
-        *val = (uint8_t)ival;
-    return ret;
-}
-
-static inline int rc5t619_set_bits(struct device *dev, unsigned int reg,
-    unsigned int bit_mask)
-{
-    struct rc5t619_dev *rc5t619 = dev_get_drvdata(dev);
-    return regmap_update_bits(rc5t619->regmap, reg, bit_mask, bit_mask);
-}
-
-static inline int rc5t619_clear_bits(struct device *dev, unsigned int reg,
-    unsigned int bit_mask)
-{
-    struct rc5t619_dev *rc5t619 = dev_get_drvdata(dev);
-    return regmap_update_bits(rc5t619->regmap, reg, bit_mask, 0); 
-}
-
-static inline int rc5t619_update(struct device *dev, unsigned int reg,
-    unsigned int val, unsigned int mask)
-{
-    struct rc5t619_dev *rc5t619 = dev_get_drvdata(dev);
-    return regmap_update_bits(rc5t619->regmap, reg, mask, val);
-}
-
-int rc5t619_ext_power_req_config(struct device *dev, int deepsleep_id,
-	int ext_pwr_req, int deepsleep_slot_nr);
-
-#endif /* __LINUX_MFD_RC5T619_H */
+#endif
